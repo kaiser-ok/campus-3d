@@ -372,6 +372,7 @@ function App() {
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [heightScale, setHeightScale] = useState(1);
   const [selectedEntity, setSelectedEntity] = useState(heatZones[0]);
+  const [selectedFloor, setSelectedFloor] = useState(null);
   const [hoveredEntity, setHoveredEntity] = useState(null);
   const [cameraPreset, setCameraPreset] = useState({ name: 'home', tick: 0 });
 
@@ -383,6 +384,11 @@ function App() {
     const highTraffic = heatZones.filter((zone) => zone.traffic === 'high' || zone.traffic === 'critical').length;
     return { online, warning, offline, issueZones, highTraffic };
   }, []);
+  const activeBuildingId = getActiveBuildingId(selectedEntity?.id);
+
+  useEffect(() => {
+    setSelectedFloor(getInitialFloorForEntity(selectedEntity));
+  }, [selectedEntity]);
 
   return (
     <main className="app-shell">
@@ -410,9 +416,11 @@ function App() {
           heightScale={heightScale}
           selectedEntity={selectedEntity}
           selectedId={selectedEntity?.id}
+          selectedFloor={selectedFloor}
           cameraPreset={cameraPreset}
           onSelect={setSelectedEntity}
           onHover={setHoveredEntity}
+          onFloorSelect={setSelectedFloor}
         />
 
         {hoveredEntity ? (
@@ -479,7 +487,34 @@ function App() {
           </label>
         </section>
 
-        <DetailPanel entity={selectedEntity} />
+        <section className="panel-section">
+          <div className="section-title">
+            <Building2 size={17} />
+            <h2>建築物</h2>
+          </div>
+          <div className="building-list">
+            {buildings.map((building) => {
+              const status = buildingStatus(building.id);
+              const deviceCount = devices.filter((device) => device.building === building.id).length;
+              return (
+                <button
+                  className={`building-row ${activeBuildingId === building.id ? 'is-active' : ''}`}
+                  key={building.id}
+                  type="button"
+                  onClick={() => setSelectedEntity(building)}
+                >
+                  <span className="building-swatch" style={{ background: HEALTH[status].color }} />
+                  <span className="building-copy">
+                    <strong>{building.name}</strong>
+                    <small>{buildingLevelSummary(building)} · {deviceCount} 台設備 · {HEALTH[status].label}</small>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <DetailPanel entity={selectedEntity} selectedFloor={selectedFloor} />
 
         <section className="panel-section">
           <div className="section-title">
@@ -544,9 +579,11 @@ function CampusScene({
   heightScale,
   selectedEntity,
   selectedId,
+  selectedFloor,
   cameraPreset,
   onSelect,
   onHover,
+  onFloorSelect,
 }) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
@@ -649,7 +686,7 @@ function CampusScene({
     }
 
     const activeBuildingId = getActiveBuildingId(selectedId);
-    buildings.forEach((building) => addBuilding(content, building, mode, heightScale, selectedId, activeBuildingId, showDevices, interactiveRef.current));
+    buildings.forEach((building) => addBuilding(content, building, mode, heightScale, selectedId, activeBuildingId, showDevices, selectedFloor, interactiveRef.current));
 
     if (showDevices) {
       devices.forEach((device) => addDevice(content, device, mode, selectedId, heightScale, interactiveRef.current));
@@ -657,7 +694,7 @@ function CampusScene({
 
     scene.add(content);
     contentRef.current = content;
-  }, [mode, showPlan, showDevices, showHeatmap, heightScale, selectedId]);
+  }, [mode, showPlan, showDevices, showHeatmap, heightScale, selectedId, selectedFloor]);
 
   useEffect(() => {
     const camera = cameraRef.current;
@@ -698,6 +735,10 @@ function CampusScene({
       const rect = canvas.getBoundingClientRect();
       pointerRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointerRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      if (selectedEntity?.floors && !event.buttons) {
+        const nextFloor = floorFromPointer(event, rect, selectedEntity.floors);
+        if (nextFloor !== selectedFloor) onFloorSelect(nextFloor);
+      }
       raycasterRef.current.setFromCamera(pointerRef.current, camera);
       const hits = raycasterRef.current.intersectObjects(interactiveRef.current, true);
       const hit = hits.find((item) => item.object.userData?.entity);
@@ -724,7 +765,44 @@ function CampusScene({
       canvas.removeEventListener('pointerleave', handleLeave);
       canvas.removeEventListener('click', handleClick);
     };
-  }, [onHover, onSelect]);
+  }, [onFloorSelect, onHover, onSelect, selectedEntity, selectedFloor]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      if (!camera || !controls || isTypingTarget(event.target)) return;
+
+      const key = event.key.toLowerCase();
+      const shift = event.shiftKey ? 1.8 : 1;
+      const yawStep = 0.085 * shift;
+      const pitchStep = 0.055 * shift;
+      const zoomStep = event.shiftKey ? 0.82 : 0.9;
+
+      if (key === 'a' || event.key === 'ArrowLeft') {
+        event.preventDefault();
+        orbitCamera(camera, controls, yawStep, 0);
+      } else if (key === 'd' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        orbitCamera(camera, controls, -yawStep, 0);
+      } else if (key === 'w' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        orbitCamera(camera, controls, 0, -pitchStep);
+      } else if (key === 's' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        orbitCamera(camera, controls, 0, pitchStep);
+      } else if (key === '=' || key === '+' || key === 'q') {
+        event.preventDefault();
+        zoomCamera(camera, controls, zoomStep);
+      } else if (key === '-' || key === '_' || key === 'e') {
+        event.preventDefault();
+        zoomCamera(camera, controls, 1 / zoomStep);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   return <canvas ref={canvasRef} className="campus-canvas" aria-label="壽山高中 3D 校園 WiFi 監控場景" />;
 }
@@ -830,9 +908,10 @@ function addCourt(group, { x, z, w, d, label }) {
   group.add(createLabel(label, [x, 0.55, z], [7.2, 2, 1], '#4e312d', 'rgba(255,255,255,0.5)'));
 }
 
-function addBuilding(group, building, mode, heightScale, selectedId, activeBuildingId, showDevices, interactive) {
+function addBuilding(group, building, mode, heightScale, selectedId, activeBuildingId, showDevices, selectedFloor, interactive) {
   const status = buildingStatus(building.id);
   const isActive = activeBuildingId === building.id;
+  const highlightedFloor = isActive && selectedFloor ? Math.min(building.floors, Math.max(1, selectedFloor)) : null;
   const xray = showDevices;
   const floorHeight = 1.85;
   const h = Math.max(2.7, building.floors * floorHeight * heightScale);
@@ -881,8 +960,9 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
   edges.position.copy(mesh.position);
   group.add(edges);
 
-  addFloorStructure(group, building, floorHeight * heightScale, h, isActive || mode === 'planning');
-  addRoomLabels(group, building, floorHeight * heightScale, isActive || mode === 'planning', interactive);
+  addFloorStructure(group, building, floorHeight * heightScale, h, isActive || mode === 'planning', highlightedFloor);
+  addRoomLabels(group, building, floorHeight * heightScale, isActive || mode === 'planning', interactive, highlightedFloor, isActive);
+  if (isActive) addRoofDashboard(group, building, h, highlightedFloor, status);
   if (isActive) addBuildingFocusFrame(group, building, h);
   group.add(createLabel(building.name, [building.x, h + 2.2, building.z], [Math.min(13, building.w + 3), 2.5, 1], '#1f3138'));
 }
@@ -896,7 +976,34 @@ function addBuildingFocusFrame(group, building, height) {
   group.add(frame);
 }
 
-function addFloorStructure(group, building, floorStep, height, isSelected) {
+function addRoofDashboard(group, building, height, highlightedFloor, status) {
+  const floor = highlightedFloor || building.floors;
+  const buildingDevices = devices.filter((device) => device.building === building.id);
+  const floorDevices = buildingDevices.filter((device) => parseDeviceFloor(device.floor) === floor);
+  const faultCount = buildingDevices.filter((device) => device.status === 'offline').length;
+  const roomCount = building.rooms?.[floor]?.length || 0;
+  const deckWidth = Math.max(7, Math.min(building.w * 0.72, 20));
+  const deckDepth = Math.max(3.5, Math.min(building.d * 0.42, 8));
+  const deck = new THREE.Mesh(
+    new THREE.BoxGeometry(deckWidth, 0.1, deckDepth),
+    new THREE.MeshBasicMaterial({
+      color: HEALTH[status]?.color || '#b7f5df',
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    }),
+  );
+  deck.position.set(building.x, height + 0.36, building.z);
+  deck.renderOrder = 14;
+  group.add(deck);
+
+  const labelText = `${floor}F | ${roomCount} 間 | AP ${floorDevices.length} | 故障 ${faultCount}`;
+  const label = createLabel(labelText, [building.x, height + 1.25, building.z], [Math.max(7, Math.min(deckWidth + 2.5, 18)), 1.08, 1], '#12312e', 'rgba(232,255,246,0.9)');
+  label.renderOrder = 18;
+  group.add(label);
+}
+
+function addFloorStructure(group, building, floorStep, height, isSelected, highlightedFloor) {
   const lineMaterial = new THREE.LineBasicMaterial({
     color: isSelected ? '#2bb8a5' : '#ffffff',
     transparent: true,
@@ -929,6 +1036,31 @@ function addFloorStructure(group, building, floorStep, height, isSelected) {
     const slab = new THREE.Mesh(new THREE.BoxGeometry(building.w + 0.16, 0.04, building.d + 0.16), slabMaterial);
     slab.position.set(building.x, y, building.z);
     group.add(slab);
+  }
+
+  if (highlightedFloor) {
+    const floorY = (highlightedFloor - 0.5) * floorStep;
+    const highlight = new THREE.Mesh(
+      new THREE.BoxGeometry(building.w + 0.52, floorStep * 0.72, building.d + 0.52),
+      new THREE.MeshBasicMaterial({
+        color: '#2bb8a5',
+        transparent: true,
+        opacity: 0.18,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    highlight.position.set(building.x, floorY, building.z);
+    highlight.renderOrder = 6;
+    group.add(highlight);
+
+    const ring = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(building.w + 0.6, floorStep * 0.78, building.d + 0.6)),
+      new THREE.LineBasicMaterial({ color: '#14b8a6', transparent: true, opacity: 0.95 }),
+    );
+    ring.position.copy(highlight.position);
+    ring.renderOrder = 7;
+    group.add(ring);
   }
 
   addFacadeWindows(group, building, floorStep);
@@ -966,11 +1098,10 @@ function addFloorLabels(group, building, floorStep, height) {
   }
 }
 
-function addRoomLabels(group, building, floorStep, showRooms, interactive) {
+function addRoomLabels(group, building, floorStep, showRooms, interactive, highlightedFloor, isActive) {
   if (!showRooms || !building.rooms) return;
 
   const longAxis = building.w >= building.d ? 'x' : 'z';
-  const bg = 'rgba(255,255,255,0.9)';
   const color = '#26383d';
   const floorEntries = Object.entries(building.rooms)
     .map(([floor, rooms]) => [Number(floor), rooms])
@@ -984,12 +1115,18 @@ function addRoomLabels(group, building, floorStep, showRooms, interactive) {
     const start = -usable / 2;
 
     rooms.forEach((room, index) => {
+      const isCurrent = highlightedFloor === floor;
       const offset = start + step * index;
       const position = longAxis === 'x'
         ? [building.x + offset, y, building.z + building.d / 2 + 1.45]
         : [building.x + building.w / 2 + 1.4, y, building.z + offset];
-      const scale = String(room).length >= 5 ? [3.15, 0.76, 1] : [2.42, 0.72, 1];
-      const label = createLabel(room, position, scale, color, bg);
+      const scaleBoost = isCurrent ? 1.2 : 1;
+      const scale = String(room).length >= 5
+        ? [3.15 * scaleBoost, 0.76 * scaleBoost, 1]
+        : [2.42 * scaleBoost, 0.72 * scaleBoost, 1];
+      const label = createLabel(room, position, scale, color, isCurrent ? 'rgba(217,255,242,0.95)' : 'rgba(255,255,255,0.86)');
+      label.material.opacity = isActive && highlightedFloor && !isCurrent ? 0.44 : 1;
+      label.renderOrder = isCurrent ? 20 : 9;
       label.userData.entity = building;
       interactive.push(label);
       group.add(label);
@@ -1071,6 +1208,44 @@ function getActiveBuildingId(selectedId) {
   const device = devices.find((item) => item.id === selectedId);
   if (device?.building && device.building !== 'outdoor') return device.building;
   return null;
+}
+
+function getInitialFloorForEntity(entity) {
+  if (!entity) return null;
+  if (entity.floors) return entity.floors;
+  if (entity.type === 'ap' || entity.type === 'switch') {
+    const floor = parseDeviceFloor(entity.floor);
+    return floor > 0 ? floor : null;
+  }
+  return null;
+}
+
+function floorFromPointer(event, rect, floors) {
+  const ratio = 1 - Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+  return Math.min(floors, Math.max(1, Math.floor(ratio * floors) + 1));
+}
+
+function isTypingTarget(target) {
+  const tag = target?.tagName?.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable;
+}
+
+function orbitCamera(camera, controls, yaw, pitch) {
+  const offset = camera.position.clone().sub(controls.target);
+  const spherical = new THREE.Spherical().setFromVector3(offset);
+  spherical.theta += yaw;
+  spherical.phi = Math.min(Math.PI * 0.48, Math.max(0.24, spherical.phi + pitch));
+  offset.setFromSpherical(spherical);
+  camera.position.copy(controls.target).add(offset);
+  controls.update();
+}
+
+function zoomCamera(camera, controls, scale) {
+  const offset = camera.position.clone().sub(controls.target);
+  const nextDistance = Math.min(controls.maxDistance, Math.max(controls.minDistance, offset.length() * scale));
+  offset.setLength(nextDistance);
+  camera.position.copy(controls.target).add(offset);
+  controls.update();
 }
 
 function getBuildingFocus(building, heightScale) {
@@ -1413,7 +1588,7 @@ function entitySubtitle(entity) {
   return '';
 }
 
-function DetailPanel({ entity }) {
+function DetailPanel({ entity, selectedFloor }) {
   if (!entity) return null;
 
   const isDevice = entity.type === 'ap' || entity.type === 'switch';
@@ -1456,16 +1631,17 @@ function DetailPanel({ entity }) {
         <>
           <div className="detail-grid">
             <Detail label="樓層" value={buildingLevelSummary(entity)} />
+            <Detail label="目前樓層" value={selectedFloor ? `${selectedFloor}F` : '-'} />
             <Detail label="設備狀態" value={HEALTH[buildingStatus(entity.id)].label} />
           </div>
-          <RoomStack building={entity} />
+          <RoomStack building={entity} selectedFloor={selectedFloor} />
         </>
       ) : null}
     </section>
   );
 }
 
-function RoomStack({ building }) {
+function RoomStack({ building, selectedFloor }) {
   if (!building.rooms) return null;
   return (
     <div className="room-stack">
@@ -1473,7 +1649,7 @@ function RoomStack({ building }) {
         .map(([floor, rooms]) => [Number(floor), rooms])
         .sort(([a], [b]) => b - a)
         .map(([floor, rooms]) => (
-          <div className="room-row" key={floor}>
+          <div className={`room-row ${selectedFloor === floor ? 'is-active' : ''}`} key={floor}>
             <span>{floor}F</span>
             <p>{rooms.join(' · ')}</p>
           </div>
