@@ -39,6 +39,7 @@ VERIFY_URL=http://127.0.0.1:5174/ node scripts/verify-visual.mjs
 - `src/data/buildings.json`: Default school building footprints, floors, basements, accents, and room labels.
 - `src/data/devices.json`: Default AP/switch inventory and demo metrics.
 - `src/data/heatZones.json`: Default signal and traffic heat zones.
+- `src/data/xikunSchool.js`: Built-in New Taipei Xikun Junior High School test dataset generated from GSNM UnitID 3, including buildings, switches, APs, servers, heat zones, and physical network links.
 - `src/styles.css`: All layout, sidebar, 3D tool, editor, import wizard, network path, and responsive styles.
 - `vite.config.js`: Vite config plus local AI proxy endpoints.
 - `scripts/verify-visual.mjs`: Headless visual verification across desktop and mobile viewports.

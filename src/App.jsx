@@ -9,6 +9,7 @@ import {
   Check,
   ChevronDown,
   Cpu,
+  Download,
   Eye,
   EyeOff,
   FolderOpen,
@@ -31,6 +32,7 @@ import ImportWizard from './ImportWizard.jsx';
 import buildingsData from './data/buildings.json';
 import devicesData from './data/devices.json';
 import heatZonesData from './data/heatZones.json';
+import xikunSchool from './data/xikunSchool.js';
 
 const DEFAULT_SCHOOL = {
   id: 'default',
@@ -42,23 +44,81 @@ const DEFAULT_SCHOOL = {
   planUrl: '/school-plan.jpg',
 };
 
+const BUILTIN_SCHOOLS = [DEFAULT_SCHOOL, xikunSchool];
+const BUILTIN_SCHOOL_IDS = new Set(BUILTIN_SCHOOLS.map((school) => school.id));
+const BUILTIN_OVERRIDES_KEY = 'campus3d_builtin_overrides';
+
+function isBuiltInSchool(id) {
+  return BUILTIN_SCHOOL_IDS.has(id);
+}
+
+function schoolStoragePayload({ id, name, buildings, devices, heatZones, networkLinks, meta }) {
+  return { id, name, buildings, devices, heatZones, networkLinks, meta };
+}
+
+function loadBuiltInOverrides() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BUILTIN_OVERRIDES_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function applyBuiltInOverride(school, overrides) {
+  const override = overrides?.[school.id] || null;
+  const storedPlanUrl = localStorage.getItem(`campus3d_img_${school.id}`);
+  return {
+    ...school,
+    ...(override || {}),
+    id: school.id,
+    planUrl: storedPlanUrl || override?.planUrl || school.planUrl || null,
+  };
+}
+
+function saveBuiltInSchoolOverride(school) {
+  try {
+    const overrides = loadBuiltInOverrides();
+    overrides[school.id] = schoolStoragePayload(school);
+    localStorage.setItem(BUILTIN_OVERRIDES_KEY, JSON.stringify(overrides));
+  } catch (e) {
+    console.warn('[campus3d] 內建學校校正儲存失敗', e);
+  }
+}
+
+function removeBuiltInSchoolOverride(id) {
+  try {
+    const overrides = loadBuiltInOverrides();
+    delete overrides[id];
+    localStorage.setItem(BUILTIN_OVERRIDES_KEY, JSON.stringify(overrides));
+    localStorage.removeItem(`campus3d_img_${id}`);
+  } catch (e) {
+    console.warn('[campus3d] 內建學校校正重設失敗', e);
+  }
+}
+
 function loadSchools() {
   try {
     const stored = JSON.parse(localStorage.getItem('campus3d_schools') || '[]');
-    return [normalizeSchoolGeometry(DEFAULT_SCHOOL), ...stored.map((s) => normalizeSchoolGeometry({
-      ...s,
-      planUrl: localStorage.getItem(`campus3d_img_${s.id}`) || null,
-    }))];
+    const overrides = loadBuiltInOverrides();
+    const builtInSchools = BUILTIN_SCHOOLS.map((school) => normalizeSchoolGeometry(applyBuiltInOverride(school, overrides)));
+    const importedSchools = stored
+      .filter((school) => !isBuiltInSchool(school.id))
+      .map((s) => normalizeSchoolGeometry({
+        ...s,
+        planUrl: localStorage.getItem(`campus3d_img_${s.id}`) || null,
+      }));
+    return [...builtInSchools, ...importedSchools];
   } catch {
-    return [DEFAULT_SCHOOL];
+    return BUILTIN_SCHOOLS.map(normalizeSchoolGeometry);
   }
 }
 
 function saveSchools(schools) {
   try {
     const payload = schools
-      .filter((s) => s.id !== 'default')
-      .map(({ id, name, buildings, devices, heatZones, networkLinks }) => ({ id, name, buildings, devices, heatZones, networkLinks }));
+      .filter((s) => !isBuiltInSchool(s.id))
+      .map(schoolStoragePayload);
     localStorage.setItem('campus3d_schools', JSON.stringify(payload));
   } catch (e) {
     console.warn('[campus3d] 無法儲存學校清單', e);
@@ -261,21 +321,30 @@ function mergeDevicesFromNetworkRecords(existingDevices = [], records = [], buil
     const type = /switch|sw|交換器/i.test(typeRaw || id) ? 'switch' : 'ap';
     const parsedX = Number(getRecordValue(record, ['x', 'X']));
     const parsedZ = Number(getRecordValue(record, ['z', 'Z']));
+    const name = getRecordValue(record, ['name', 'deviceName', 'device_name', '名稱']) || current?.name || id;
+    const location = getRecordValue(record, ['location', 'installLocation', 'install_location', '位置', '安裝地點']) || current?.location || '';
+    const room = getRecordValue(record, ['room', 'roomName', 'room_name', 'space', 'spaceName', 'space_name', 'classroom', 'classroomId', '教室', '空間', '位置空間']) || current?.room || inferRoomNameFromText(`${location} ${name} ${id}`);
+    const floor = getRecordValue(record, ['floor', '樓層']) || current?.floor || '1F';
+    const placement = getRecordValue(record, ['placement', 'place', 'mount', 'positionMode', '放置方式', '安裝位置']) || current?.placement || defaultDevicePlacement(type);
+    const roomPosition = buildingInfo && room ? roomPositionForDevice(buildingInfo, floor, room, type, placement, index) : null;
     const offset = (index % 5) - 2;
-    const fallbackX = buildingInfo ? buildingInfo.x + clamp(offset * 1.8, -buildingInfo.w / 3, buildingInfo.w / 3) : 0;
-    const fallbackZ = buildingInfo ? buildingInfo.z + clamp(Math.floor(index / 5) * 1.7, -buildingInfo.d / 3, buildingInfo.d / 3) : 0;
+    const fallbackX = roomPosition?.x ?? (buildingInfo ? buildingInfo.x + clamp(offset * 1.8, -buildingInfo.w / 3, buildingInfo.w / 3) : 0);
+    const fallbackZ = roomPosition?.z ?? (buildingInfo ? buildingInfo.z + clamp(Math.floor(index / 5) * 1.7, -buildingInfo.d / 3, buildingInfo.d / 3) : 0);
     const patch = {
       id,
       type: current?.type || type,
-      name: getRecordValue(record, ['name', 'deviceName', 'device_name', '名稱']) || current?.name || id,
+      name,
       building,
-      x: Number.isFinite(parsedX) ? parsedX : current?.x ?? Math.round(fallbackX * 10) / 10,
-      z: Number.isFinite(parsedZ) ? parsedZ : current?.z ?? Math.round(fallbackZ * 10) / 10,
-      floor: getRecordValue(record, ['floor', '樓層']) || current?.floor || '1F',
+      x: Number.isFinite(parsedX) ? parsedX : roomPosition?.x ?? current?.x ?? Math.round(fallbackX * 10) / 10,
+      z: Number.isFinite(parsedZ) ? parsedZ : roomPosition?.z ?? current?.z ?? Math.round(fallbackZ * 10) / 10,
+      floor,
+      room,
+      placement,
       status: normalizeStatus(getRecordValue(record, ['status', '狀態']) || current?.status || 'online'),
       users: Number(getRecordValue(record, ['users', 'clientCount', 'clients', '用戶'])) || current?.users || 0,
       mbps: Number(getRecordValue(record, ['mbps', 'traffic', 'throughput', '流量'])) || current?.mbps || 0,
       channel: getRecordValue(record, ['channel', '頻道']) || current?.channel || '-',
+      location,
     };
 
     if (current) {
@@ -287,6 +356,45 @@ function mergeDevicesFromNetworkRecords(existingDevices = [], records = [], buil
   });
 
   return next;
+}
+
+function defaultDevicePlacement(type) {
+  return type === 'ap' ? 'room-center' : 'corridor-edge';
+}
+
+function normalizeRoomToken(value = '') {
+  return String(value).replace(/[^A-Z0-9一-鿿]/gi, '').toUpperCase();
+}
+
+function roomPositionForDevice(building, floorValue, roomValue, type = 'ap', placement = '', index = 0) {
+  const floor = Math.max(1, parseDeviceFloor(floorValue) || 1);
+  const rooms = building.rooms?.[floor] || [];
+  const roomKey = normalizeRoomToken(roomValue);
+  const matchedIndex = rooms.findIndex((room) => normalizeRoomToken(room).includes(roomKey) || roomKey.includes(normalizeRoomToken(room)));
+  const count = Math.max(1, rooms.length || 1);
+  const roomIndex = matchedIndex >= 0 ? matchedIndex : index % count;
+  const along = (roomIndex + 0.5) / count;
+  const edgeMode = isEdgePlacement({ type, placement });
+  const crossOffset = edgeMode ? 0.38 : 0;
+
+  if (building.w >= building.d) {
+    return {
+      x: Number((building.x - building.w / 2 + building.w * along).toFixed(1)),
+      z: Number((building.z + building.d * crossOffset).toFixed(1)),
+    };
+  }
+
+  return {
+    x: Number((building.x + building.w * crossOffset).toFixed(1)),
+    z: Number((building.z - building.d / 2 + building.d * along).toFixed(1)),
+  };
+}
+
+function isEdgePlacement(device) {
+  const placement = String(device?.placement || '').toLowerCase();
+  if (/room|center|inside|middle|教室|空間|置中|室內/.test(placement)) return false;
+  if (/edge|corridor|tray|wall|走廊|線槽|邊|牆/.test(placement)) return true;
+  return device?.type !== 'ap';
 }
 
 function resolveBuildingId(value, buildingList = []) {
@@ -377,8 +485,8 @@ function createVisibleSampleNetworkRecords(deviceList = [], buildingList = []) {
       fiberCore: '',
       uplinkTo: core.id,
       status: 'warning',
-      users: 128,
-      mbps: 920,
+      users: 35,
+      mbps: 180,
       channel: '5GHz ch149',
       note: '範例：高用戶與高流量 AP，可搭配用戶流量模式觀察',
     },
@@ -415,14 +523,98 @@ function normalizeEditedBuildings(rawBuildings) {
 
 function normalizeSchoolGeometry(school) {
   const normalizedBuildings = sanitizeSceneBuildings(school.buildings || []);
-  const normalizedDevices = Array.isArray(school.devices) ? school.devices : [];
+  const normalizedDevices = normalizeBuiltInTestDeviceMetrics(school.id, normalizeSceneDevices(school.devices || [], normalizedBuildings), school.meta);
+  const enrichedBuildings = enrichBuildingRoomsWithDevices(normalizedBuildings, normalizedDevices);
   return {
     ...school,
-    buildings: normalizedBuildings,
+    buildings: enrichedBuildings,
     devices: normalizedDevices,
     heatZones: Array.isArray(school.heatZones) ? school.heatZones : [],
-    networkLinks: normalizeNetworkLinks(school.networkLinks || [], normalizedDevices, normalizedBuildings),
+    networkLinks: normalizeNetworkLinks(school.networkLinks || [], normalizedDevices, enrichedBuildings),
   };
+}
+
+function normalizeSceneDevices(rawDevices = [], buildingList = []) {
+  if (!Array.isArray(rawDevices)) return [];
+  return rawDevices.map((device, index) => {
+    const type = device.type || (/switch|sw|交換器/i.test(`${device.id || ''} ${device.name || ''}`) ? 'switch' : 'ap');
+    const building = buildingList.find((item) => item.id === device.building);
+    const room = device.room || inferRoomNameFromText(`${device.location || ''} ${device.name || ''} ${device.id || ''}`);
+    const placement = device.placement || defaultDevicePlacement(type);
+    const roomPosition = building && room && (!Number.isFinite(Number(device.x)) || !Number.isFinite(Number(device.z)))
+      ? roomPositionForDevice(building, device.floor || '1F', room, type, placement, index)
+      : null;
+    return {
+      ...device,
+      type,
+      room,
+      placement,
+      x: Number.isFinite(Number(device.x)) ? Number(device.x) : roomPosition?.x ?? device.x,
+      z: Number.isFinite(Number(device.z)) ? Number(device.z) : roomPosition?.z ?? device.z,
+    };
+  });
+}
+
+function enrichBuildingRoomsWithDevices(buildingList = [], deviceList = []) {
+  const namesByBuilding = new Map();
+  deviceList.forEach((device) => {
+    if (!device.building || !device.room) return;
+    const key = roomMatchKey(device.room);
+    if (!key) return;
+    const byRoom = namesByBuilding.get(device.building) || new Map();
+    const current = byRoom.get(key);
+    if (!current || String(device.room).length > String(current).length) byRoom.set(key, device.room);
+    namesByBuilding.set(device.building, byRoom);
+  });
+
+  return buildingList.map((building) => {
+    const byRoom = namesByBuilding.get(building.id);
+    if (!byRoom || !building.rooms) return building;
+    const rooms = Object.fromEntries(Object.entries(building.rooms).map(([floor, items]) => [
+      floor,
+      (Array.isArray(items) ? items : []).map((room) => {
+        const key = roomMatchKey(room);
+        const enriched = key ? byRoom.get(key) : null;
+        return enriched && String(enriched).length > String(room).length ? enriched : room;
+      }),
+    ]));
+    return { ...building, rooms };
+  });
+}
+
+function normalizeBuiltInTestDeviceMetrics(schoolId, deviceList = [], meta = {}) {
+  if (schoolId !== 'xikun-jhs') return deviceList;
+  if (meta?.manualDeviceMetrics) return deviceList;
+  return deviceList.map((device, index) => {
+    if (device.type !== 'ap') return device;
+    const locationText = `${device.location || ''} ${device.room || ''} ${device.name || ''}`;
+    const busy = /A2[4-9]|B1[8-9]|C14|D2[2-4]|D3[01]|E2[0-5]/.test(locationText);
+    return {
+      ...device,
+      users: busy ? 30 + (index % 6) : 8 + (index % 20),
+      mbps: busy ? 112 + (index % 12) * 7 : 32 + (index % 12) * 5,
+    };
+  });
+}
+
+function roomMatchKey(value = '') {
+  const code = String(value).match(/([A-Z])\s*-?\s*(\d{1,3})/i);
+  if (code) return `${code[1].toUpperCase()}${String(Number(code[2])).padStart(2, '0')}`;
+  return normalizeRoomToken(value);
+}
+
+function inferRoomNameFromText(text = '') {
+  const value = String(text || '');
+  const code = value.match(/([A-Z])\s*-?\s*(\d{1,3})\s*([\u4e00-\u9fffA-Za-z（）()_-]{0,12})/i);
+  const namedPattern = /(前走廊|後走廊|走廊|機房|辦公室|導師辦公室|導辦|教媒中心|總務處|學務處|教務處|會計室|多功能教室|自然教室|族語教室|電腦教室|實驗室|閱讀區|圖書館|活動中心|體育館|川堂|公托|幼兒園|警衛室|司令臺|球場)/;
+  const named = value.match(namedPattern)?.[1] || '';
+  if (code) {
+    const roomCode = `${code[1].toUpperCase()}${String(Number(code[2])).padStart(2, '0')}`;
+    const suffix = String(code[3] || '').replace(/[-_]/g, '').trim();
+    const roomName = suffix && !/^[A-Z0-9]+$/i.test(suffix) ? suffix : named;
+    return roomName && !roomCode.includes(roomName) ? `${roomCode} ${roomName}` : roomCode;
+  }
+  return named;
 }
 
 function sceneBuildingArea(building) {
@@ -524,6 +716,12 @@ function sanitizeSceneBuildings(rawBuildings) {
 }
 
 const CAMPUS = { width: 92, depth: 130 };
+const BUILDING_FLOOR_HEIGHT = 2.55;
+const LABEL_REFERENCE_DISTANCE = 78;
+const LABEL_MIN_SCALE = 0.28;
+const LABEL_MAX_SCALE = 1.08;
+const LABEL_TEXTURE_SCALE = 3;
+const LABEL_WORLD_POSITION = new THREE.Vector3();
 
 const BUILDING_ACCENT_OPTIONS = ['#617180', '#687985', '#72808b', '#697987', '#737c88', '#8a7b67', '#64798a', '#667983'];
 
@@ -559,13 +757,36 @@ const TRAFFIC = {
   critical: { label: '壅塞', color: '#d9465f', dark: '#9f1239' },
 };
 
+const AP_LOAD_LIMITS = {
+  mediumUsers: 15,
+  mediumMbps: 50,
+  highUsers: 30,
+  highMbps: 100,
+  criticalUsers: 60,
+  criticalMbps: 250,
+};
+
 const CABLING = {
   tray: { label: '走廊線槽', color: '#7a8790' },
   fiber: { label: '跨棟光纖', color: '#7c3aed' },
   riser: { label: '垂直管道', color: '#2563eb' },
   copper: { label: 'Cat6 支線', color: '#14b8a6' },
+  floorSwitch: { label: '樓層服務 Switch', color: '#2563eb' },
+  edgeSwitch: { label: '教室 / 邊緣 Switch', color: '#38bdf8' },
   selected: { label: '選取路徑', color: '#f59e0b' },
 };
+
+const DEFAULT_SCENE_OPACITY = {
+  plan: 0.52,
+  building: 1,
+  devices: 1,
+  cabling: 1,
+};
+
+function loadSceneOpacity(key, fallback) {
+  const saved = Number(localStorage.getItem(`campus3d_opacity_${key}`));
+  return Number.isFinite(saved) ? clamp(saved, 0.12, 1) : fallback;
+}
 
 let buildings = buildingsData;
 let heatZones = heatZonesData;
@@ -576,15 +797,29 @@ function App() {
   const [mode, setMode] = useState('signal');
   const [showPlan, setShowPlan] = useState(true);
   const [showDevices, setShowDevices] = useState(true);
+  const [showCurrentFloorOnly, setShowCurrentFloorOnly] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showCabling, setShowCabling] = useState(false);
   const [heightScale, setHeightScale] = useState(1);
+  const [labelScale, setLabelScale] = useState(() => {
+    const saved = Number(localStorage.getItem('campus3d_label_scale'));
+    return Number.isFinite(saved) && saved > 0 ? clamp(saved, 0.55, 1.45) : 1;
+  });
+  const [sceneOpacity, setSceneOpacity] = useState(() => ({
+    plan: loadSceneOpacity('plan', DEFAULT_SCENE_OPACITY.plan),
+    building: loadSceneOpacity('building', DEFAULT_SCENE_OPACITY.building),
+    devices: loadSceneOpacity('devices', DEFAULT_SCENE_OPACITY.devices),
+    cabling: loadSceneOpacity('cabling', DEFAULT_SCENE_OPACITY.cabling),
+  }));
   const [selectedEntity, setSelectedEntity] = useState(heatZones[0]);
+  const [deviceGroupOpen, setDeviceGroupOpen] = useState({ alerts: true, ap: false, switch: false, server: false, other: false });
   const [selectedFloor, setSelectedFloor] = useState(null);
+  const [selectedRoom, setSelectedRoom] = useState(null);
   const [hoveredEntity, setHoveredEntity] = useState(null);
   const [cameraPreset, setCameraPreset] = useState({ name: 'home', tick: 0 });
   const [showWizard, setShowWizard] = useState(false);
   const [showSchoolEditor, setShowSchoolEditor] = useState(false);
+  const [showDataManager, setShowDataManager] = useState(false);
   const [sceneVersion, setSceneVersion] = useState(0);
   const [aiBackend, setAiBackend] = useState('gemma');
   const [schools, setSchools] = useState(() => {
@@ -600,8 +835,7 @@ function App() {
   const [currentSchoolId, setCurrentSchoolId] = useState(() => localStorage.getItem('campus3d_current') || 'default');
   const [planUrl, setPlanUrl] = useState(() => {
     const savedId = localStorage.getItem('campus3d_current') || 'default';
-    if (savedId === 'default') return '/school-plan.jpg';
-    return localStorage.getItem(`campus3d_img_${savedId}`) || '/school-plan.jpg';
+    return loadSchools().find((school) => school.id === savedId)?.planUrl ?? null;
   });
   const [showHints, setShowHints] = useState(false);
   const [showSchoolPicker, setShowSchoolPicker] = useState(false);
@@ -609,6 +843,7 @@ function App() {
   const [networkImportMessage, setNetworkImportMessage] = useState('');
 
   const currentSchool = schools.find((s) => s.id === currentSchoolId) ?? DEFAULT_SCHOOL;
+  const currentIsBuiltIn = isBuiltInSchool(currentSchoolId);
 
   function switchSchool(id) {
     const school = schools.find((s) => s.id === id);
@@ -618,15 +853,16 @@ function App() {
     heatZones = school.heatZones;
     networkLinks = school.networkLinks || normalizeNetworkLinks([], school.devices || [], school.buildings || []);
     setCurrentSchoolId(id);
-    setPlanUrl(school.planUrl || '/school-plan.jpg');
+    setPlanUrl(school.planUrl ?? null);
     setSceneVersion((v) => v + 1);
     setSelectedEntity(null);
+    setSelectedRoom(null);
     setShowSchoolPicker(false);
     try { localStorage.setItem('campus3d_current', id); } catch {}
   }
 
   function deleteSchool(id) {
-    if (id === 'default') return;
+    if (isBuiltInSchool(id)) return;
     const school = schools.find((item) => item.id === id);
     const ok = window.confirm(`確定刪除「${school?.name || '此學校'}」？刪除後可重新匯入。`);
     if (!ok) return;
@@ -643,15 +879,38 @@ function App() {
       heatZones = fallback.heatZones;
       networkLinks = fallback.networkLinks || normalizeNetworkLinks([], fallback.devices || [], fallback.buildings || []);
       setCurrentSchoolId('default');
-      setPlanUrl(fallback.planUrl || '/school-plan.jpg');
+      setPlanUrl(fallback.planUrl ?? null);
       setSelectedEntity(null);
+      setSelectedRoom(null);
       setSceneVersion((v) => v + 1);
       try { localStorage.setItem('campus3d_current', 'default'); } catch {}
     }
   }
 
+  function resetBuiltInSchool(id) {
+    if (!isBuiltInSchool(id)) return;
+    const baseSchool = BUILTIN_SCHOOLS.find((school) => school.id === id);
+    if (!baseSchool) return;
+    const ok = window.confirm(`恢復「${baseSchool.name}」的內建建築位置與底圖？`);
+    if (!ok) return;
+    removeBuiltInSchoolOverride(id);
+    const restoredSchool = normalizeSchoolGeometry(baseSchool);
+    const next = schools.map((school) => (school.id === id ? restoredSchool : school));
+    setSchools(next);
+    if (currentSchoolId === id) {
+      buildings = restoredSchool.buildings;
+      devices = restoredSchool.devices;
+      heatZones = restoredSchool.heatZones;
+      networkLinks = restoredSchool.networkLinks || normalizeNetworkLinks([], restoredSchool.devices || [], restoredSchool.buildings || []);
+      setPlanUrl(restoredSchool.planUrl ?? null);
+      setSelectedEntity(null);
+      setSelectedRoom(null);
+      setSceneVersion((value) => value + 1);
+    }
+  }
+
   function handleSchoolEditSave(editedSchool, newPlanDataUrl) {
-    if (!editedSchool || editedSchool.id === 'default') return;
+    if (!editedSchool) return;
     const updatedBuildings = normalizeEditedBuildings(editedSchool.buildings || []);
     const updatedDevices = editedSchool.devices || [];
     const updatedSchool = {
@@ -669,12 +928,46 @@ function App() {
     heatZones = updatedSchool.heatZones;
     networkLinks = updatedSchool.networkLinks;
     setSchools(next);
-    saveSchools(next);
     if (newPlanDataUrl) saveSchoolImage(updatedSchool.id, newPlanDataUrl);
-    setPlanUrl(updatedSchool.planUrl || '/school-plan.jpg');
+    if (isBuiltInSchool(updatedSchool.id)) saveBuiltInSchoolOverride(updatedSchool);
+    else saveSchools(next);
+    setPlanUrl(updatedSchool.planUrl ?? null);
     setSelectedEntity(null);
+    setSelectedRoom(null);
     setSceneVersion((value) => value + 1);
     setShowSchoolEditor(false);
+  }
+
+  function persistCurrentSchool(updatedSchool) {
+    const nextSchools = schools.map((school) => (school.id === updatedSchool.id ? updatedSchool : school));
+    setSchools(nextSchools);
+    if (isBuiltInSchool(updatedSchool.id)) saveBuiltInSchoolOverride(updatedSchool);
+    else saveSchools(nextSchools);
+  }
+
+  function handleDataManagerSave(nextDevices, nextLinks) {
+    const normalizedDevices = normalizeSceneDevices(nextDevices, buildings);
+    const normalizedLinks = normalizeNetworkLinks(nextLinks, normalizedDevices, buildings);
+    const updatedSchool = {
+      ...currentSchool,
+      buildings,
+      devices: normalizedDevices,
+      heatZones,
+      networkLinks: normalizedLinks,
+      meta: {
+        ...(currentSchool.meta || {}),
+        manualDeviceMetrics: true,
+        dataManagedAt: new Date().toISOString(),
+      },
+    };
+    devices = normalizedDevices;
+    networkLinks = normalizedLinks;
+    persistCurrentSchool(updatedSchool);
+    setSelectedEntity(null);
+    setSelectedRoom(null);
+    setSceneVersion((value) => value + 1);
+    setNetworkImportMessage(`已儲存 ${normalizedDevices.length} 台設備與 ${normalizedLinks.length} 筆拓樸線路`);
+    setShowDataManager(false);
   }
 
   function handleWizardApply(newBuildings, newPlanUrl, schoolName) {
@@ -703,6 +996,7 @@ function App() {
     setSceneVersion((v) => v + 1);
     setShowWizard(false);
     setSelectedEntity(null);
+    setSelectedRoom(null);
   }
 
   function applyNetworkRecords(records, messagePrefix = '已匯入') {
@@ -716,11 +1010,9 @@ function App() {
       heatZones,
       networkLinks: nextLinks,
     };
-    const nextSchools = schools.map((school) => (school.id === currentSchoolId ? updatedSchool : school));
     devices = nextDevices;
     networkLinks = nextLinks;
-    setSchools(nextSchools);
-    saveSchools(nextSchools);
+    persistCurrentSchool(updatedSchool);
     setMode('cabling');
     setShowCabling(true);
     setSelectedEntity(nextDevices.find((device) => device.id === records[0]?.deviceId) || nextDevices.find((device) => device.id === nextLinks[0]?.deviceId) || null);
@@ -752,6 +1044,12 @@ function App() {
     }
   }
 
+  function updateSceneOpacity(key, value) {
+    const nextValue = clamp(Number(value) || DEFAULT_SCENE_OPACITY[key] || 1, 0.12, 1);
+    setSceneOpacity((current) => ({ ...current, [key]: nextValue }));
+    try { localStorage.setItem(`campus3d_opacity_${key}`, String(nextValue)); } catch {}
+  }
+
   const metrics = useMemo(() => {
     const offline = devices.filter((device) => device.status === 'offline').length;
     const warning = devices.filter((device) => device.status === 'warning').length;
@@ -767,10 +1065,39 @@ function App() {
     return { mapped, fiber, offline };
   }, [sceneVersion]);
   const activeBuildingId = getActiveBuildingId(selectedEntity?.id);
+  const activeSelectedRoom = selectedRoom?.buildingId === activeBuildingId ? selectedRoom : null;
+
+  function handleSelectEntity(entity) {
+    setSelectedEntity(entity);
+  }
+
+  function handleFloorSelect(floor) {
+    setSelectedFloor(floor);
+    setSelectedRoom(null);
+  }
+
+  function handleRoomSelect(floor, room) {
+    if (!selectedEntity?.floors || !room) return;
+    const nextFloor = Math.max(1, Number(floor) || 1);
+    setSelectedFloor(nextFloor);
+    setSelectedRoom({ buildingId: selectedEntity.id, floor: nextFloor, room });
+  }
 
   useEffect(() => {
-    setSelectedFloor(getInitialFloorForEntity(selectedEntity));
+    const initialFloor = getInitialFloorForEntity(selectedEntity);
+    setSelectedFloor(initialFloor);
+    if (selectedEntity?.type === 'ap' || selectedEntity?.type === 'switch' || selectedEntity?.type === 'server') {
+      setSelectedRoom(selectedEntity.room ? { buildingId: selectedEntity.building, floor: initialFloor, room: selectedEntity.room } : null);
+    } else {
+      setSelectedRoom(null);
+    }
   }, [selectedEntity]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('campus3d_label_scale', String(labelScale));
+    } catch {}
+  }, [labelScale]);
 
   return (
     <main className="app-shell">
@@ -832,7 +1159,7 @@ function App() {
                 <span>方向鍵 ↑↓←→ 同 WASD</span>
               </div>
               <div className="kbd-row kbd-row--note">
-                <span>Shift 加速 · 滑鼠拖曳旋轉 · 滾輪縮放</span>
+                <span>Shift 加速 · 數字鍵切樓層 · Shift + 滾輪切樓層</span>
               </div>
             </div>
           </div>
@@ -842,19 +1169,23 @@ function App() {
           mode={mode}
           showPlan={showPlan}
           showDevices={showDevices}
+          showCurrentFloorOnly={showCurrentFloorOnly}
           showHeatmap={showHeatmap}
           showCabling={showCabling || mode === 'cabling'}
           heightScale={heightScale}
+          labelScale={labelScale}
+          sceneOpacity={sceneOpacity}
           selectedEntity={selectedEntity}
           selectedId={selectedEntity?.id}
           selectedFloor={selectedFloor}
+          selectedRoom={activeSelectedRoom}
           cameraPreset={cameraPreset}
           sceneVersion={sceneVersion}
           planUrl={planUrl}
           showDefaultFeatures={currentSchoolId === 'default'}
-          onSelect={setSelectedEntity}
+          onSelect={handleSelectEntity}
           onHover={setHoveredEntity}
-          onFloorSelect={setSelectedFloor}
+          onFloorSelect={handleFloorSelect}
         />
 
         {hoveredEntity ? (
@@ -908,7 +1239,7 @@ function App() {
                 <button className="school-item-btn" type="button" onClick={() => switchSchool(school.id)}>
                   {school.name}
                 </button>
-                {school.id !== 'default' && (
+                {!isBuiltInSchool(school.id) && (
                   <button className="school-item-del" type="button" aria-label="刪除" onClick={() => deleteSchool(school.id)}>
                     <X size={13} />
                   </button>
@@ -928,26 +1259,33 @@ function App() {
           <Metric label="問題區域" value={metrics.issueZones + metrics.highTraffic} tone="orange" />
         </section>
 
-        {currentSchoolId !== 'default' && (
-          <section className="panel-section school-manage-panel">
-            <div className="section-title">
-              <FolderOpen size={17} />
-              <h2>目前學校</h2>
-            </div>
-            <p className="school-manage-name">{currentSchool.name}</p>
-            <div className="school-manage-actions">
-              <button type="button" className="school-edit-btn" onClick={() => setShowSchoolEditor(true)}>
-                編輯
+        <section className="panel-section school-manage-panel">
+          <div className="section-title">
+            <FolderOpen size={17} />
+            <h2>目前學校</h2>
+          </div>
+          <p className="school-manage-name">{currentSchool.name}</p>
+          {currentIsBuiltIn && <p className="school-manage-note">內建資料，可編輯建築位置；修改會儲存在本機瀏覽器。</p>}
+          <div className={`school-manage-actions ${currentIsBuiltIn ? 'is-built-in' : ''}`}>
+            <button type="button" className="school-edit-btn" onClick={() => setShowSchoolEditor(true)}>
+              編輯建築位置
+            </button>
+            {currentIsBuiltIn ? (
+              <button type="button" className="school-reimport-btn" onClick={() => resetBuiltInSchool(currentSchoolId)}>
+                恢復內建
               </button>
-              <button type="button" className="school-reimport-btn" onClick={() => setShowWizard(true)}>
-                重新匯入
-              </button>
-              <button type="button" className="school-delete-current" onClick={() => deleteSchool(currentSchoolId)}>
-                刪除學校
-              </button>
-            </div>
-          </section>
-        )}
+            ) : (
+              <>
+                <button type="button" className="school-reimport-btn" onClick={() => setShowWizard(true)}>
+                  重新匯入
+                </button>
+                <button type="button" className="school-delete-current" onClick={() => deleteSchool(currentSchoolId)}>
+                  刪除學校
+                </button>
+              </>
+            )}
+          </div>
+        </section>
 
         <section className="panel-section">
           <div className="section-title">
@@ -956,6 +1294,7 @@ function App() {
           </div>
           <div className="toggle-grid">
             <Toggle checked={showDevices} label="AP / switch" onChange={setShowDevices} />
+            <Toggle checked={showCurrentFloorOnly} label="只看目前樓層" onChange={setShowCurrentFloorOnly} />
             <Toggle checked={showHeatmap} label="熱區" onChange={setShowHeatmap} />
             <Toggle checked={showCabling || mode === 'cabling'} label="線槽 / 線路" onChange={setShowCabling} />
           </div>
@@ -971,6 +1310,66 @@ function App() {
             />
             <b>{heightScale.toFixed(1)}x</b>
           </label>
+          <label className="range-field">
+            <span>Label 字體</span>
+            <input
+              type="range"
+              min="0.6"
+              max="1.4"
+              step="0.05"
+              value={labelScale}
+              onChange={(event) => setLabelScale(Number(event.target.value))}
+            />
+            <b>{Math.round(labelScale * 100)}%</b>
+          </label>
+          <label className="range-field">
+            <span>底圖透明度</span>
+            <input
+              type="range"
+              min="0.12"
+              max="1"
+              step="0.04"
+              value={sceneOpacity.plan}
+              onChange={(event) => updateSceneOpacity('plan', event.target.value)}
+            />
+            <b>{Math.round(sceneOpacity.plan * 100)}%</b>
+          </label>
+          <label className="range-field">
+            <span>建築透明度</span>
+            <input
+              type="range"
+              min="0.12"
+              max="1"
+              step="0.04"
+              value={sceneOpacity.building}
+              onChange={(event) => updateSceneOpacity('building', event.target.value)}
+            />
+            <b>{Math.round(sceneOpacity.building * 100)}%</b>
+          </label>
+          <label className="range-field">
+            <span>設備透明度</span>
+            <input
+              type="range"
+              min="0.12"
+              max="1"
+              step="0.04"
+              value={sceneOpacity.devices}
+              onChange={(event) => updateSceneOpacity('devices', event.target.value)}
+            />
+            <b>{Math.round(sceneOpacity.devices * 100)}%</b>
+          </label>
+          <label className="range-field">
+            <span>線路透明度</span>
+            <input
+              type="range"
+              min="0.12"
+              max="1"
+              step="0.04"
+              value={sceneOpacity.cabling}
+              onChange={(event) => updateSceneOpacity('cabling', event.target.value)}
+            />
+            <b>{Math.round(sceneOpacity.cabling * 100)}%</b>
+          </label>
         </section>
 
         <section className="panel-section network-data-panel">
@@ -984,6 +1383,10 @@ function App() {
             <Detail label="異常線路" value={`${networkStats.offline}`} />
           </div>
           <div className="network-action-row">
+            <button className="network-manage-btn" type="button" onClick={() => setShowDataManager(true)}>
+              <Pencil size={16} />
+              <span>管理資料</span>
+            </button>
             <label className="network-import-btn">
               <Upload size={16} />
               <span>匯入 CSV / JSON</span>
@@ -999,7 +1402,7 @@ function App() {
               <span>載入範例</span>
             </button>
           </div>
-          <p className="network-import-hint">自動化測試資料只在測試瀏覽器內；要在目前畫面看差異，可按「載入範例」。欄位可含 deviceId、type、name、building、floor、x、z、switchId、switchPort、patchPanel、patchPort、vlan、cableId、medium、fiberCore、uplinkTo、status、note。</p>
+          <p className="network-import-hint">自動化測試資料只在測試瀏覽器內；要在目前畫面看差異，可按「載入範例」。欄位可含 deviceId、type、name、building、floor、room、placement、x、z、switchId、switchPort、patchPanel、patchPort、vlan、cableId、medium、fiberCore、uplinkTo、status、note。placement 可用 room-center / corridor-edge。</p>
           {networkImportMessage && <p className="network-import-ok">{networkImportMessage}</p>}
           {networkImportError && <p className="network-import-error">{networkImportError}</p>}
         </section>
@@ -1012,18 +1415,23 @@ function App() {
           <div className="building-list">
             {buildings.map((building) => {
               const status = buildingStatus(building.id);
-              const deviceCount = devices.filter((device) => device.building === building.id).length;
+              const deviceSummary = buildingDeviceSummary(building.id);
+              const rowClass = [
+                'building-row',
+                activeBuildingId === building.id ? 'is-active' : '',
+                status !== 'online' ? 'has-alert' : '',
+              ].filter(Boolean).join(' ');
               return (
                 <button
-                  className={`building-row ${activeBuildingId === building.id ? 'is-active' : ''}`}
+                  className={rowClass}
                   key={building.id}
                   type="button"
-                  onClick={() => setSelectedEntity(building)}
+                  onClick={() => handleSelectEntity(building)}
                 >
                   <span className="building-swatch" style={{ background: HEALTH[status].color }} />
                   <span className="building-copy">
                     <strong>{building.name}</strong>
-                    <small>{buildingLevelSummary(building)} · {deviceCount} 台設備 · {HEALTH[status].label}</small>
+                    <small>{buildingLevelSummary(building)} · {deviceSummary} · {HEALTH[status].label}</small>
                   </span>
                 </button>
               );
@@ -1031,32 +1439,21 @@ function App() {
           </div>
         </section>
 
-        <DetailPanel entity={selectedEntity} selectedFloor={selectedFloor} />
+        <DetailPanel entity={selectedEntity} selectedFloor={selectedFloor} selectedRoom={activeSelectedRoom} selectedId={selectedEntity?.id} mode={mode} onFloorSelect={handleFloorSelect} onRoomSelect={handleRoomSelect} onSelectDevice={handleSelectEntity} />
 
         <section className="panel-section">
           <div className="section-title">
             <Wifi size={17} />
-            <h2>AP / Switch</h2>
+            <h2>設備清單</h2>
           </div>
-          <div className="device-list">
-            {devices.map((device) => (
-              <button
-                className={`device-row ${selectedEntity?.id === device.id ? 'is-active' : ''}`}
-                key={device.id}
-                type="button"
-                onClick={() => setSelectedEntity(device)}
-              >
-                <span className="device-icon" style={{ '--dot': statusColor(device.status, mode, device) }}>
-                  {device.type === 'ap' ? <Wifi size={15} /> : <Server size={15} />}
-                </span>
-                <span className="device-copy">
-                  <strong>{device.name}</strong>
-                  <small>{device.floor} · {device.id}</small>
-                </span>
-                <span className="device-load">{device.users}</span>
-              </button>
-            ))}
-          </div>
+          <DeviceGroupList
+            groups={createDeviceGroups(devices)}
+            mode={mode}
+            openState={deviceGroupOpen}
+            selectedId={selectedEntity?.id}
+            onToggle={(groupId) => setDeviceGroupOpen((state) => ({ ...state, [groupId]: !state[groupId] }))}
+            onSelect={handleSelectEntity}
+          />
         </section>
 
         <section className="panel-section">
@@ -1070,7 +1467,7 @@ function App() {
                 className={`zone-row ${selectedEntity?.id === zone.id ? 'is-active' : ''}`}
                 key={zone.id}
                 type="button"
-                onClick={() => setSelectedEntity(zone)}
+                onClick={() => handleSelectEntity(zone)}
               >
                 <span className="zone-swatch" style={{ background: zoneColor(zone, mode) }} />
                 <span>
@@ -1086,11 +1483,20 @@ function App() {
         <Legend mode={mode} />
       </aside>
 
-      {showSchoolEditor && currentSchoolId !== 'default' && (
+      {showSchoolEditor && (
         <SchoolEditor
           school={currentSchool}
           onClose={() => setShowSchoolEditor(false)}
           onSave={handleSchoolEditSave}
+        />
+      )}
+
+      {showDataManager && (
+        <DataManager
+          school={currentSchool}
+          buildings={buildings}
+          onClose={() => setShowDataManager(false)}
+          onSave={handleDataManagerSave}
         />
       )}
 
@@ -1443,16 +1849,353 @@ function SchoolEditor({ school, onClose, onSave }) {
 }
 
 
+function DataManager({ school, buildings: buildingList, onClose, onSave }) {
+  const [activeTab, setActiveTab] = useState('devices');
+  const [draftDevices, setDraftDevices] = useState(() => normalizeSceneDevices(school.devices || [], buildingList));
+  const [draftLinks, setDraftLinks] = useState(() => normalizeNetworkLinks(school.networkLinks || [], school.devices || [], buildingList));
+  const [importMessage, setImportMessage] = useState('');
+  const [importError, setImportError] = useState('');
+  const deviceIdSet = useMemo(() => new Set(draftDevices.map((device) => device.id)), [draftDevices]);
+
+  function uniqueDeviceId(prefix) {
+    let index = draftDevices.length + 1;
+    let id = `${prefix}-${String(index).padStart(2, '0')}`;
+    while (deviceIdSet.has(id)) {
+      index += 1;
+      id = `${prefix}-${String(index).padStart(2, '0')}`;
+    }
+    return id;
+  }
+
+  function updateDevice(index, field, value) {
+    setDraftDevices((current) => {
+      const previousId = current[index]?.id;
+      const nextValue = ['x', 'z', 'users', 'mbps'].includes(field) ? Number(value) || 0 : value;
+      const next = current.map((device, itemIndex) => (itemIndex === index ? { ...device, [field]: nextValue } : device));
+      if (field === 'id' && previousId && value && previousId !== value) {
+        setDraftLinks((links) => links.map((link) => ({
+          ...link,
+          deviceId: link.deviceId === previousId ? value : link.deviceId,
+          switchId: link.switchId === previousId ? value : link.switchId,
+          uplinkTo: link.uplinkTo === previousId ? value : link.uplinkTo,
+        })));
+      }
+      return next;
+    });
+  }
+
+  function addDevice(type = 'ap') {
+    const building = buildingList[0] || { id: 'outdoor', x: 0, z: 0 };
+    const id = uniqueDeviceId(type === 'switch' ? 'SW' : type === 'server' ? 'SV' : 'AP');
+    setDraftDevices((current) => [
+      ...current,
+      {
+        id,
+        type,
+        name: id,
+        building: building.id,
+        x: Number(building.x) || 0,
+        z: Number(building.z) || 0,
+        floor: '1F',
+        room: '',
+        placement: type === 'ap' ? 'room-center' : 'corridor-edge',
+        status: 'online',
+        users: 0,
+        mbps: 0,
+        channel: '',
+        role: type === 'switch' ? '交換器' : type === 'server' ? '伺服器' : '無線 AP',
+      },
+    ]);
+  }
+
+  function removeDevice(id) {
+    setDraftDevices((current) => current.filter((device) => device.id !== id));
+    setDraftLinks((current) => current.filter((link) => link.deviceId !== id && link.switchId !== id));
+  }
+
+  function updateLink(index, field, value) {
+    setDraftLinks((current) => current.map((link, itemIndex) => (
+      itemIndex === index ? normalizeNetworkLink({ ...link, [field]: value }, index) : link
+    )));
+  }
+
+  function addLink() {
+    const candidates = draftDevices.filter((device) => device.type === 'ap' || device.type === 'switch');
+    const device = candidates.find((item) => !draftLinks.some((link) => link.deviceId === item.id)) || candidates[0];
+    if (!device) return;
+    setDraftLinks((current) => [
+      ...current,
+      normalizeNetworkLink({
+        id: `net-${device.id}`,
+        deviceId: device.id,
+        switchId: draftDevices.find((item) => item.type === 'switch')?.id || '',
+        switchPort: '',
+        medium: device.type === 'switch' ? 'fiber' : 'cat6',
+        status: device.status || 'online',
+      }, current.length),
+    ]);
+  }
+
+  function removeLink(index) {
+    setDraftLinks((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  async function importData(file) {
+    if (!file) return;
+    setImportError('');
+    setImportMessage('');
+    try {
+      const text = await readTextFile(file);
+      const parsed = JSON.parse(text);
+      const importedDevices = Array.isArray(parsed) ? parsed : parsed.devices;
+      const importedLinks = parsed.networkLinks || parsed.links || parsed.topology;
+      if (activeTab === 'devices' && Array.isArray(importedDevices)) {
+        const nextDevices = normalizeSceneDevices(importedDevices, buildingList);
+        setDraftDevices(nextDevices);
+        if (Array.isArray(importedLinks)) setDraftLinks(normalizeNetworkLinks(importedLinks, nextDevices, buildingList));
+        setImportMessage(`已載入 ${nextDevices.length} 台設備`);
+        return;
+      }
+      if (activeTab === 'links' && Array.isArray(importedLinks)) {
+        const nextLinks = normalizeNetworkLinks(importedLinks, draftDevices, buildingList);
+        setDraftLinks(nextLinks);
+        setImportMessage(`已載入 ${nextLinks.length} 筆拓樸線路`);
+        return;
+      }
+      throw new Error(activeTab === 'devices' ? 'JSON 需包含 devices 陣列' : 'JSON 需包含 networkLinks / links 陣列');
+    } catch (error) {
+      if (activeTab === 'links') {
+        try {
+          const text = await readTextFile(file);
+          const records = parseNetworkLinksText(text, file.name);
+          const nextLinks = normalizeNetworkLinks(records, draftDevices, buildingList);
+          setDraftLinks(nextLinks);
+          setImportMessage(`已載入 ${nextLinks.length} 筆拓樸線路`);
+          return;
+        } catch {}
+      }
+      setImportError(error.message || '資料匯入失敗');
+    }
+  }
+
+  function exportData() {
+    const payload = {
+      schoolId: school.id,
+      schoolName: school.name,
+      exportedAt: new Date().toISOString(),
+      devices: draftDevices,
+      networkLinks: draftLinks,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${school.id || 'school'}-devices-topology.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function save() {
+    onSave(draftDevices, draftLinks);
+  }
+
+  return (
+    <div className="editor-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="data-manager-modal" role="dialog" aria-modal="true" aria-label="設備與拓樸資料管理">
+        <header className="editor-header">
+          <div>
+            <p className="editor-eyebrow">localStorage data</p>
+            <h2>設備與拓樸資料管理</h2>
+          </div>
+          <button type="button" className="icon-button" aria-label="關閉" onClick={onClose}><X size={18} /></button>
+        </header>
+
+        <div className="data-manager-toolbar">
+          <div className="data-tabs" role="tablist" aria-label="資料類型">
+            <button type="button" className={activeTab === 'devices' ? 'is-active' : ''} onClick={() => setActiveTab('devices')}>設備 {draftDevices.length}</button>
+            <button type="button" className={activeTab === 'links' ? 'is-active' : ''} onClick={() => setActiveTab('links')}>拓樸線路 {draftLinks.length}</button>
+          </div>
+          <div className="data-actions">
+            <label className="data-file-btn">
+              <Upload size={15} />
+              <span>匯入</span>
+              <input type="file" accept=".json,.csv,application/json,text/csv" onChange={(event) => importData(event.target.files?.[0])} />
+            </label>
+            <button type="button" className="data-outline-btn" onClick={exportData}><Download size={15} /> 匯出</button>
+            {activeTab === 'devices' ? (
+              <button type="button" className="data-primary-btn" onClick={() => addDevice('ap')}><Plus size={15} /> 新增 AP</button>
+            ) : (
+              <button type="button" className="data-primary-btn" onClick={addLink}><Plus size={15} /> 新增線路</button>
+            )}
+          </div>
+        </div>
+
+        {(importMessage || importError) && (
+          <div className="data-import-status">
+            {importMessage && <p className="network-import-ok">{importMessage}</p>}
+            {importError && <p className="network-import-error">{importError}</p>}
+          </div>
+        )}
+
+        <div className="data-manager-body">
+          {activeTab === 'devices' ? (
+            <div className="data-table-wrap">
+              <table className="data-table data-device-table">
+                <thead>
+                  <tr>
+                    <th>類型</th>
+                    <th>ID / 名稱</th>
+                    <th>位置</th>
+                    <th>狀態</th>
+                    <th>用戶 / 流量</th>
+                    <th>放置</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {draftDevices.map((device, index) => (
+                    <tr key={`${device.id}-${index}`}>
+                      <td>
+                        <select value={device.type || 'ap'} onChange={(event) => updateDevice(index, 'type', event.target.value)}>
+                          <option value="ap">AP</option>
+                          <option value="switch">Switch</option>
+                          <option value="server">Server</option>
+                          <option value="device">其他</option>
+                        </select>
+                      </td>
+                      <td>
+                        <input value={device.id || ''} onChange={(event) => updateDevice(index, 'id', event.target.value)} />
+                        <input value={device.name || ''} onChange={(event) => updateDevice(index, 'name', event.target.value)} />
+                      </td>
+                      <td>
+                        <select value={device.building || ''} onChange={(event) => updateDevice(index, 'building', event.target.value)}>
+                          <option value="outdoor">戶外</option>
+                          {buildingList.map((building) => <option key={building.id} value={building.id}>{building.name}</option>)}
+                        </select>
+                        <div className="data-inline-fields">
+                          <input value={device.floor || ''} onChange={(event) => updateDevice(index, 'floor', event.target.value)} placeholder="樓層" />
+                          <input value={device.room || ''} onChange={(event) => updateDevice(index, 'room', event.target.value)} placeholder="Room" />
+                        </div>
+                        <div className="data-inline-fields">
+                          <input type="number" value={device.x ?? 0} onChange={(event) => updateDevice(index, 'x', event.target.value)} />
+                          <input type="number" value={device.z ?? 0} onChange={(event) => updateDevice(index, 'z', event.target.value)} />
+                        </div>
+                      </td>
+                      <td>
+                        <select value={device.status || 'online'} onChange={(event) => updateDevice(index, 'status', event.target.value)}>
+                          <option value="online">正常</option>
+                          <option value="warning">警告</option>
+                          <option value="offline">故障</option>
+                        </select>
+                      </td>
+                      <td>
+                        <div className="data-inline-fields">
+                          <input type="number" min="0" value={device.users ?? 0} onChange={(event) => updateDevice(index, 'users', event.target.value)} />
+                          <input type="number" min="0" value={device.mbps ?? 0} onChange={(event) => updateDevice(index, 'mbps', event.target.value)} />
+                        </div>
+                      </td>
+                      <td>
+                        <select value={device.placement || defaultDevicePlacement(device.type)} onChange={(event) => updateDevice(index, 'placement', event.target.value)}>
+                          <option value="room-center">教室置中</option>
+                          <option value="corridor-edge">走廊線槽</option>
+                          <option value="wall-edge">牆邊</option>
+                        </select>
+                      </td>
+                      <td><button type="button" className="data-remove-btn" onClick={() => removeDevice(device.id)}><Trash2 size={15} /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="data-table-wrap">
+              <table className="data-table data-link-table">
+                <thead>
+                  <tr>
+                    <th>設備</th>
+                    <th>上聯 Switch / Port</th>
+                    <th>配線</th>
+                    <th>媒介 / 狀態</th>
+                    <th>備註</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {draftLinks.map((link, index) => (
+                    <tr key={`${link.deviceId}-${index}`}>
+                      <td>
+                        <select value={link.deviceId || ''} onChange={(event) => updateLink(index, 'deviceId', event.target.value)}>
+                          {draftDevices.filter((device) => device.type === 'ap' || device.type === 'switch').map((device) => (
+                            <option key={device.id} value={device.id}>{device.id}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <select value={link.switchId || ''} onChange={(event) => updateLink(index, 'switchId', event.target.value)}>
+                          <option value="">未指定</option>
+                          {draftDevices.filter((device) => device.type === 'switch').map((device) => (
+                            <option key={device.id} value={device.id}>{device.id}</option>
+                          ))}
+                        </select>
+                        <input value={link.switchPort || ''} onChange={(event) => updateLink(index, 'switchPort', event.target.value)} placeholder="Gi1/0/24" />
+                      </td>
+                      <td>
+                        <input value={link.patchPanel || ''} onChange={(event) => updateLink(index, 'patchPanel', event.target.value)} placeholder="Patch panel" />
+                        <input value={link.patchPort || ''} onChange={(event) => updateLink(index, 'patchPort', event.target.value)} placeholder="Patch port" />
+                        <input value={link.cableId || ''} onChange={(event) => updateLink(index, 'cableId', event.target.value)} placeholder="線號" />
+                      </td>
+                      <td>
+                        <select value={link.medium || 'cat6'} onChange={(event) => updateLink(index, 'medium', event.target.value)}>
+                          <option value="cat6">Cat6</option>
+                          <option value="fiber">光纖</option>
+                        </select>
+                        <select value={link.status || 'online'} onChange={(event) => updateLink(index, 'status', event.target.value)}>
+                          <option value="online">正常</option>
+                          <option value="warning">警告</option>
+                          <option value="offline">故障</option>
+                        </select>
+                        <input value={link.vlan || ''} onChange={(event) => updateLink(index, 'vlan', event.target.value)} placeholder="VLAN" />
+                      </td>
+                      <td>
+                        <input value={link.uplinkTo || ''} onChange={(event) => updateLink(index, 'uplinkTo', event.target.value)} placeholder="上聯" />
+                        <input value={link.note || ''} onChange={(event) => updateLink(index, 'note', event.target.value)} placeholder="備註" />
+                      </td>
+                      <td><button type="button" className="data-remove-btn" onClick={() => removeLink(index)}><Trash2 size={15} /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <footer className="editor-footer">
+          <p className="data-manager-note">目前版本儲存在瀏覽器 localStorage；正式系統可再改接 server API / database。</p>
+          <button type="button" className="editor-cancel-btn" onClick={onClose}>取消</button>
+          <button type="button" className="editor-save-btn" onClick={save}><Check size={16} /> 儲存資料</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+
 function CampusScene({
   mode,
   showPlan,
   showDevices,
+  showCurrentFloorOnly,
   showHeatmap,
   showCabling,
   heightScale,
+  labelScale,
+  sceneOpacity,
   selectedEntity,
   selectedId,
   selectedFloor,
+  selectedRoom,
   cameraPreset,
   sceneVersion,
   planUrl,
@@ -1472,6 +2215,15 @@ function CampusScene({
   const raycasterRef = useRef(new THREE.Raycaster());
   const pointerRef = useRef(new THREE.Vector2());
   const walkKeysRef = useRef(new Set());
+  const pointerDragRef = useRef({ button: null, startX: 0, startY: 0, moved: false, suppressClick: false });
+  const labelScaleRef = useRef(labelScale);
+  const [viewLevel, setViewLevel] = useState('overview');
+  const viewLevelRef = useRef('overview');
+
+  useEffect(() => {
+    labelScaleRef.current = labelScale;
+    if (contentRef.current && cameraRef.current) rescaleSceneLabels(contentRef.current, cameraRef.current, labelScale);
+  }, [labelScale]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1484,8 +2236,7 @@ function CampusScene({
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.enabled = false;
 
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
@@ -1494,20 +2245,24 @@ function CampusScene({
     controls.minDistance = 28;
     controls.maxDistance = 190;
     controls.target.set(0, 0, 6);
+    controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+    controls.mouseButtons.MIDDLE = THREE.MOUSE.DOLLY;
+    controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
 
-    const hemisphere = new THREE.HemisphereLight('#ffffff', '#b7c0bd', 1.8);
+    const cancelFocusAnimation = () => {
+      cancelAnimationFrame(camera.userData.focusAnimation);
+      camera.userData.focusAnimation = 0;
+    };
+    const preventCanvasContextMenu = (event) => event.preventDefault();
+    controls.addEventListener('start', cancelFocusAnimation);
+    canvas.addEventListener('contextmenu', preventCanvasContextMenu);
+
+    const hemisphere = new THREE.HemisphereLight('#ffffff', '#d5ddd8', 2.25);
     scene.add(hemisphere);
 
-    const sun = new THREE.DirectionalLight('#ffffff', 2.4);
+    const sun = new THREE.DirectionalLight('#ffffff', 1.15);
     sun.position.set(52, 86, 42);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.near = 10;
-    sun.shadow.camera.far = 180;
-    sun.shadow.camera.left = -80;
-    sun.shadow.camera.right = 80;
-    sun.shadow.camera.top = 90;
-    sun.shadow.camera.bottom = -90;
+    sun.castShadow = false;
     scene.add(sun);
 
     sceneRef.current = scene;
@@ -1533,6 +2288,12 @@ function CampusScene({
     const animate = () => {
       controls.update();
 
+      const nextViewLevel = getViewLevel(camera.position.distanceTo(controls.target));
+      if (nextViewLevel !== viewLevelRef.current) {
+        viewLevelRef.current = nextViewLevel;
+        setViewLevel(nextViewLevel);
+      }
+
       const wk = walkKeysRef.current;
       if (wk.size > 0) {
         const speed = 0.22;
@@ -1550,6 +2311,7 @@ function CampusScene({
         controls.target.add(delta);
       }
 
+      if (contentRef.current) rescaleSceneLabels(contentRef.current, camera, labelScaleRef.current);
       renderer.render(scene, camera);
       animationRef.current = requestAnimationFrame(animate);
     };
@@ -1557,6 +2319,8 @@ function CampusScene({
 
     return () => {
       window.removeEventListener('resize', resize);
+      canvas.removeEventListener('contextmenu', preventCanvasContextMenu);
+      controls.removeEventListener('start', cancelFocusAnimation);
       cancelAnimationFrame(animationRef.current);
       controls.dispose();
       renderer.dispose();
@@ -1576,33 +2340,41 @@ function CampusScene({
     const content = new THREE.Group();
     interactiveRef.current = [];
 
-    addGround(content, showPlan, planUrl);
+    addGround(content, showPlan, planUrl, sceneOpacity.plan);
     if (showDefaultFeatures) addCampusFeatures(content);
 
+    const activeBuildingId = getActiveBuildingId(selectedId);
+    const activeBuilding = buildings.find((building) => building.id === activeBuildingId) || null;
+    const sceneView = activeBuildingId && viewLevel !== 'overview' ? 'focus' : viewLevel;
+
     if (showHeatmap) {
-      heatZones.forEach((zone) => addHeatZone(content, zone, mode, selectedId, interactiveRef.current));
+      heatZones
+        .filter((zone) => shouldRenderHeatZone(zone, sceneView, activeBuilding, selectedId))
+        .forEach((zone) => addHeatZone(content, zone, mode, selectedId, interactiveRef.current, sceneView, activeBuilding));
     }
 
-    const activeBuildingId = getActiveBuildingId(selectedId);
-    buildings.forEach((building) => addBuilding(content, building, mode, heightScale, selectedId, activeBuildingId, showDevices || showCabling, selectedFloor, interactiveRef.current));
+    buildings.forEach((building) => addBuilding(content, building, mode, heightScale, selectedId, activeBuildingId, showDevices || showCabling, selectedFloor, selectedRoom, interactiveRef.current, sceneView, sceneOpacity.building));
 
-    if (showCabling) {
-      addCableInfrastructure(content, mode, selectedId, heightScale, interactiveRef.current);
+    if (showCabling && sceneView !== 'overview') {
+      addCableInfrastructure(content, mode, selectedId, activeBuildingId, selectedFloor, selectedRoom, showCurrentFloorOnly, heightScale, interactiveRef.current, sceneOpacity.cabling);
     }
 
     if (showDevices) {
-      devices.forEach((device) => addDevice(content, device, mode, selectedId, heightScale, interactiveRef.current));
+      devices
+        .filter((device) => shouldRenderDevice(device, sceneView, activeBuildingId, selectedId))
+        .filter((device) => shouldRenderDeviceForScope(device, showCurrentFloorOnly, activeBuildingId, selectedFloor, selectedRoom, selectedId))
+        .forEach((device) => addDevice(content, device, mode, selectedId, heightScale, interactiveRef.current, sceneView, activeBuildingId, selectedFloor, selectedRoom, showCurrentFloorOnly, sceneOpacity.devices));
     }
 
     scene.add(content);
     contentRef.current = content;
-  }, [mode, showPlan, showDevices, showHeatmap, showCabling, heightScale, selectedId, selectedFloor, sceneVersion, planUrl, showDefaultFeatures]);
+  }, [mode, showPlan, showDevices, showCurrentFloorOnly, showHeatmap, showCabling, heightScale, labelScale, sceneOpacity, selectedId, selectedFloor, selectedRoom, sceneVersion, planUrl, showDefaultFeatures, viewLevel]);
 
   useEffect(() => {
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (!camera || !controls || !selectedEntity) return;
-    if (!selectedEntity.floors && selectedEntity.type !== 'ap' && selectedEntity.type !== 'switch') return;
+    if (!selectedEntity.floors && selectedEntity.type !== 'ap' && selectedEntity.type !== 'switch' && selectedEntity.type !== 'server') return;
 
     const target = selectedEntity.floors
       ? getBuildingFocus(selectedEntity, heightScale)
@@ -1616,13 +2388,7 @@ function CampusScene({
     const controls = controlsRef.current;
     if (!camera || !controls) return;
 
-    const presets = {
-      home: { position: [72, 80, 96], target: [0, 0, 6] },
-      top: { position: [0, 146, 0.01], target: [0, 0, 0] },
-      east: { position: [112, 56, 4], target: [4, 0, 2] },
-    };
-
-    const preset = presets[cameraPreset.name] || presets.home;
+    const preset = getCampusCameraPreset(cameraPreset.name);
     camera.position.set(...preset.position);
     controls.target.set(...preset.target);
     controls.update();
@@ -1637,11 +2403,11 @@ function CampusScene({
       const rect = canvas.getBoundingClientRect();
       pointerRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointerRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-      if (selectedEntity?.floors && !event.buttons) {
-        const nextFloor = floorFromPointer(event, rect, selectedEntity.floors);
-        if (nextFloor !== selectedFloor) onFloorSelect(nextFloor);
-      }
       raycasterRef.current.setFromCamera(pointerRef.current, camera);
+      if (selectedEntity?.floors && !event.buttons) {
+        const nextFloor = floorFromPointer(event, rect, selectedEntity, camera, heightScale, selectedFloor);
+        if (nextFloor && nextFloor !== selectedFloor) onFloorSelect(nextFloor);
+      }
       const hits = raycasterRef.current.intersectObjects(interactiveRef.current, true);
       const hit = hits.find((item) => item.object.userData?.entity);
       const entity = hit?.object.userData?.entity || null;
@@ -1651,26 +2417,81 @@ function CampusScene({
       return entity;
     };
 
+    const handlePointerDown = (event) => {
+      if (event.button !== 0 && event.button !== 2) return;
+      pointerDragRef.current = {
+        button: event.button,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+        suppressClick: pointerDragRef.current.suppressClick,
+      };
+      if (event.button === 2) canvas.style.cursor = 'grabbing';
+    };
+
     const handleMove = (event) => {
-      if (walkKeysRef.current.size > 0) return;
+      const drag = pointerDragRef.current;
+      if (drag.button !== null && event.buttons) {
+        const dx = event.clientX - drag.startX;
+        const dy = event.clientY - drag.startY;
+        if (Math.hypot(dx, dy) > 4) drag.moved = true;
+      }
+      if (walkKeysRef.current.size > 0 || event.buttons || event.shiftKey) return;
       pick(event, false);
+    };
+    const handlePointerUp = (event) => {
+      const drag = pointerDragRef.current;
+      if (drag.button === event.button) {
+        drag.suppressClick = drag.moved || event.button !== 0;
+        drag.button = null;
+      }
+      canvas.style.cursor = 'grab';
     };
     const handleLeave = () => {
       canvas.style.cursor = 'grab';
       onHover(null);
     };
-    const handleClick = (event) => pick(event, true);
+    const handleClick = (event) => {
+      const drag = pointerDragRef.current;
+      if (event.button !== 0 || drag.suppressClick) {
+        drag.suppressClick = false;
+        return;
+      }
+      pick(event, true);
+    };
+    const handleAuxClick = (event) => {
+      if (event.button !== 0) event.preventDefault();
+    };
 
+    const handleWheel = (event) => {
+      if (!selectedEntity?.floors || !event.shiftKey) return;
+      const floors = Math.max(1, Number(selectedEntity.floors) || 1);
+      const current = clamp(Number(selectedFloor) || getInitialFloorForEntity(selectedEntity) || floors, 1, floors);
+      const direction = event.deltaY < 0 ? 1 : -1;
+      const nextFloor = clamp(current + direction, 1, floors);
+      if (nextFloor === current) return;
+      event.preventDefault();
+      onFloorSelect(nextFloor);
+    };
+
+    canvas.addEventListener('pointerdown', handlePointerDown);
     canvas.addEventListener('pointermove', handleMove);
+    canvas.addEventListener('pointerup', handlePointerUp);
     canvas.addEventListener('pointerleave', handleLeave);
     canvas.addEventListener('click', handleClick);
+    canvas.addEventListener('auxclick', handleAuxClick);
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
 
     return () => {
+      canvas.removeEventListener('pointerdown', handlePointerDown);
       canvas.removeEventListener('pointermove', handleMove);
+      canvas.removeEventListener('pointerup', handlePointerUp);
       canvas.removeEventListener('pointerleave', handleLeave);
       canvas.removeEventListener('click', handleClick);
+      canvas.removeEventListener('auxclick', handleAuxClick);
+      canvas.removeEventListener('wheel', handleWheel);
     };
-  }, [onFloorSelect, onHover, onSelect, selectedEntity, selectedFloor]);
+  }, [heightScale, onFloorSelect, onHover, onSelect, selectedEntity, selectedFloor]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -1679,6 +2500,13 @@ function CampusScene({
       if (!camera || !controls || isTypingTarget(event.target)) return;
 
       const key = event.key.toLowerCase();
+      const floorHotkey = floorHotkeyFromEvent(event, selectedEntity);
+      if (floorHotkey) {
+        event.preventDefault();
+        onFloorSelect(floorHotkey);
+        return;
+      }
+
       const shift = event.shiftKey ? 1.8 : 1;
       const yawStep = 0.085 * shift;
       const pitchStep = 0.055 * shift;
@@ -1707,7 +2535,7 @@ function CampusScene({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [onFloorSelect, selectedEntity]);
 
   useEffect(() => {
     const WALK_KEYS = new Set(['i', 'j', 'k', 'l']);
@@ -1727,14 +2555,14 @@ function CampusScene({
   return <canvas ref={canvasRef} className="campus-canvas" aria-label="壽山高中 3D 校園 WiFi 監控場景" />;
 }
 
-function addGround(group, showPlan, planUrl = '/school-plan.jpg') {
+function addGround(group, showPlan, planUrl = '/school-plan.jpg', planOpacity = DEFAULT_SCENE_OPACITY.plan) {
   const base = new THREE.Mesh(
     new THREE.PlaneGeometry(CAMPUS.width + 8, CAMPUS.depth + 8),
     new THREE.MeshStandardMaterial({ color: '#e7ece6', roughness: 0.88 }),
   );
   base.rotation.x = -Math.PI / 2;
   base.position.y = -0.08;
-  base.receiveShadow = true;
+  base.receiveShadow = false;
   group.add(base);
 
   const grid = new THREE.GridHelper(132, 22, '#9aa8a2', '#c9d1ca');
@@ -1760,13 +2588,13 @@ function addGround(group, showPlan, planUrl = '/school-plan.jpg') {
   );
   group.add(border);
 
-  if (showPlan) {
+  if (showPlan && planUrl) {
     new THREE.TextureLoader().load(planUrl, (texture) => {
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.anisotropy = 8;
       const map = new THREE.Mesh(
         new THREE.PlaneGeometry(CAMPUS.width, CAMPUS.depth),
-        new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.52, depthWrite: false }),
+        new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: clamp(planOpacity, 0.12, 1), depthWrite: false }),
       );
       map.rotation.x = -Math.PI / 2;
       map.position.y = 0.015;
@@ -1807,7 +2635,7 @@ function addField(group, { x, z, w, d, color, label }) {
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set(x, 0.045, z);
   group.add(mesh);
-  group.add(createLabel(label, [x, 0.5, z], [8, 2.2, 1], '#31403c', 'rgba(255,255,255,0.56)'));
+  group.add(createLabel(`場地｜${label}`, [x, 0.5, z], [8.8, 2.2, 1], '#31403c', 'rgba(245,255,250,0.7)'));
 }
 
 function addCourt(group, { x, z, w, d, label }) {
@@ -1825,19 +2653,22 @@ function addCourt(group, { x, z, w, d, label }) {
   );
   edge.position.set(x, 0.08, z);
   group.add(edge);
-  group.add(createLabel(label, [x, 0.55, z], [7.2, 2, 1], '#4e312d', 'rgba(255,255,255,0.5)'));
+  group.add(createLabel(`場地｜${label}`, [x, 0.55, z], [8.2, 2, 1], '#4e312d', 'rgba(255,248,243,0.72)'));
 }
 
-function addBuilding(group, building, mode, heightScale, selectedId, activeBuildingId, showDevices, selectedFloor, interactive) {
+function addBuilding(group, building, mode, heightScale, selectedId, activeBuildingId, showDevices, selectedFloor, selectedRoom, interactive, sceneView = 'campus', opacityScale = 1) {
   const status = buildingStatus(building.id);
   const isActive = activeBuildingId === building.id;
+  const isOverview = sceneView === 'overview';
+  const isFocusOther = sceneView === 'focus' && activeBuildingId && !isActive;
   const highlightedFloor = isActive && selectedFloor ? Math.min(building.floors, Math.max(1, selectedFloor)) : null;
-  const xray = isActive && showDevices;
-  const floorHeight = 1.85;
+  const highlightedRoom = isActive && highlightedFloor && selectedRoom?.buildingId === building.id && selectedRoom.floor === highlightedFloor ? selectedRoom.room : null;
+  const xray = isActive && showDevices && !isOverview;
+  const floorHeight = BUILDING_FLOOR_HEIGHT;
   const h = Math.max(2.7, building.floors * floorHeight * heightScale);
   const color = mode === 'health' && status !== 'online' ? HEALTH[status].color : '#d8dee2';
-  const bodyOpacity = xray ? 0.42 : 1;
-  const roofOpacity = xray ? 0.58 : 1;
+  const bodyOpacity = clamp((isFocusOther ? 0.16 : xray ? 0.42 : 1) * opacityScale, 0.06, 1);
+  const roofOpacity = clamp((isFocusOther ? 0.22 : xray ? 0.58 : 1) * opacityScale, 0.08, 1);
   const material = new THREE.MeshStandardMaterial({
     color,
     transparent: bodyOpacity < 1,
@@ -1851,8 +2682,8 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
 
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(building.w, h, building.d), material);
   mesh.position.set(building.x, h / 2, building.z);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
   mesh.userData.entity = building;
   interactive.push(mesh);
   group.add(mesh);
@@ -1868,36 +2699,61 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
     }),
   );
   roof.position.set(building.x, h + 0.1, building.z);
-  roof.castShadow = true;
+  roof.castShadow = false;
   roof.userData.entity = building;
   interactive.push(roof);
   group.add(roof);
 
   const edges = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(building.w + 0.04, h + 0.04, building.d + 0.04)),
-    new THREE.LineBasicMaterial({ color: '#58646d', transparent: true, opacity: 0.42 }),
+    new THREE.LineBasicMaterial({ color: '#58646d', transparent: true, opacity: isFocusOther ? 0.1 : 0.42 }),
   );
   edges.position.copy(mesh.position);
   group.add(edges);
 
-  if (isActive || mode === 'planning') {
-    addFloorStructure(group, building, floorHeight * heightScale, h, isActive, highlightedFloor);
-  } else {
+  const showFloorDetails = !isFocusOther && !isOverview && (isActive || mode === 'planning' || sceneView === 'detail');
+  if (showFloorDetails) {
+    addFloorStructure(group, building, floorHeight * heightScale, h, isActive, highlightedFloor, highlightedRoom);
+  } else if (!isFocusOther) {
     addFacadeWindows(group, building, floorHeight * heightScale);
   }
-  addRoomLabels(group, building, floorHeight * heightScale, isActive, interactive, highlightedFloor, isActive);
+
+  const showRoomLabels = !isOverview && !isFocusOther && (isActive || (sceneView === 'detail' && mode === 'planning'));
+  addRoomLabels(group, building, floorHeight * heightScale, showRoomLabels, interactive, highlightedFloor, highlightedRoom, isActive);
+  if (isOverview) addBuildingOverviewBadge(group, building, h, status);
   if (isActive) addRoofDashboard(group, building, h, highlightedFloor, status);
   if (isActive) addBuildingFocusFrame(group, building, h);
-  const nameLabel = createLabel(
-    building.name,
-    [building.x, h + 2.2, building.z],
-    [Math.min(13, building.w + 3), isActive ? 2.5 : 2.0, 1],
-    isActive ? '#1f3138' : '#4a6068',
-    isActive ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.55)',
-  );
-  group.add(nameLabel);
+  if (!isFocusOther) {
+    const nameLabel = createLabel(
+      `建物｜${building.name}`,
+      [building.x, h + 2.2, building.z],
+      [Math.min(16, building.w + 4.5), isActive ? 2.5 : 2.0, 1],
+      isActive ? '#1f3138' : '#4a6068',
+      isActive ? 'rgba(232,248,255,0.94)' : isOverview ? 'rgba(232,248,255,0.72)' : 'rgba(232,248,255,0.62)',
+    );
+    group.add(nameLabel);
+  }
 }
 
+function addBuildingOverviewBadge(group, building, height, status) {
+  const owned = devices.filter((device) => device.building === building.id);
+  const issues = owned.filter((device) => device.status === 'offline' || device.status === 'warning').length;
+  const badgeWidth = Math.max(6.5, Math.min(14, building.w * 0.54 + 3));
+  const badgeDepth = Math.max(2.6, Math.min(5.4, building.d * 0.34 + 1.2));
+  const badgeColor = status === 'offline' ? HEALTH.offline.color : status === 'warning' ? HEALTH.warning.color : HEALTH.online.color;
+  const plate = new THREE.Mesh(
+    new THREE.BoxGeometry(badgeWidth, 0.1, badgeDepth),
+    new THREE.MeshBasicMaterial({ color: badgeColor, transparent: true, opacity: 0.72, depthWrite: false }),
+  );
+  plate.position.set(building.x, height + 0.36, building.z);
+  plate.renderOrder = 12;
+  group.add(plate);
+
+  const labelText = `${HEALTH[status].label} · ${owned.length} 台${issues ? ` · ${issues} 警` : ''}`;
+  const label = createLabel(labelText, [building.x, height + 1.18, building.z], [badgeWidth + 1.8, 1.02, 1], '#12312e', 'rgba(248,255,251,0.88)');
+  label.renderOrder = 18;
+  group.add(label);
+}
 function addBuildingFocusFrame(group, building, height) {
   const frame = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(building.w + 1.2, height + 0.8, building.d + 1.2)),
@@ -1934,7 +2790,7 @@ function addRoofDashboard(group, building, height, highlightedFloor, status) {
   group.add(label);
 }
 
-function addFloorStructure(group, building, floorStep, height, isSelected, highlightedFloor) {
+function addFloorStructure(group, building, floorStep, height, isSelected, highlightedFloor, highlightedRoom = null) {
   const lineMaterial = new THREE.LineBasicMaterial({
     color: isSelected ? '#2bb8a5' : '#ffffff',
     transparent: true,
@@ -1955,19 +2811,24 @@ function addFloorStructure(group, building, floorStep, height, isSelected, highl
     group.add(outline);
   }
 
-  const slabMaterial = new THREE.MeshBasicMaterial({
-    color: isSelected ? '#74e0ca' : '#f3faf7',
-    transparent: true,
-    opacity: isSelected ? 0.48 : 0.34,
-    depthWrite: false,
-  });
-
   for (let floor = 1; floor <= building.floors; floor += 1) {
+    const isCurrentFloor = !highlightedFloor || highlightedFloor === floor;
     const y = Math.max(0.42, floor * floorStep - 0.05);
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(building.w + 0.16, 0.04, building.d + 0.16), slabMaterial);
+    const slab = new THREE.Mesh(
+      new THREE.BoxGeometry(building.w + 0.16, 0.04, building.d + 0.16),
+      new THREE.MeshBasicMaterial({
+        color: isCurrentFloor ? (isSelected ? '#74e0ca' : '#f3faf7') : '#dfe7e5',
+        transparent: true,
+        opacity: highlightedFloor ? (isCurrentFloor ? 0.42 : 0.06) : isSelected ? 0.36 : 0.26,
+        depthWrite: false,
+      }),
+    );
     slab.position.set(building.x, y, building.z);
+    slab.renderOrder = isCurrentFloor ? 7 : 4;
     group.add(slab);
   }
+
+  addFloorLayoutGuides(group, building, floorStep, highlightedFloor, highlightedRoom, isSelected);
 
   if (highlightedFloor) {
     const floorY = (highlightedFloor - 0.5) * floorStep;
@@ -1976,7 +2837,7 @@ function addFloorStructure(group, building, floorStep, height, isSelected, highl
       new THREE.MeshBasicMaterial({
         color: '#2bb8a5',
         transparent: true,
-        opacity: 0.18,
+        opacity: 0.13,
         depthWrite: false,
         side: THREE.DoubleSide,
       }),
@@ -1995,16 +2856,226 @@ function addFloorStructure(group, building, floorStep, height, isSelected, highl
   }
 
   addFacadeWindows(group, building, floorStep);
-  addFloorLabels(group, building, floorStep, height);
+  addFloorLabels(group, building, floorStep, height, highlightedFloor);
 }
 
-function addFloorLabels(group, building, floorStep, height) {
+function getBuildingLayout(building) {
+  const longAxis = building.w >= building.d ? 'x' : 'z';
+  const corridorWidth = longAxis === 'x'
+    ? Math.max(1.45, Math.min(2.85, building.d * 0.28))
+    : Math.max(1.45, Math.min(2.85, building.w * 0.28));
+  const minX = building.x - building.w / 2;
+  const maxX = building.x + building.w / 2;
+  const minZ = building.z - building.d / 2;
+  const maxZ = building.z + building.d / 2;
+
+  if (longAxis === 'x') {
+    const roomDepth = Math.max(1.2, building.d - corridorWidth);
+    return {
+      longAxis,
+      corridorWidth,
+      minX,
+      maxX,
+      minZ,
+      maxZ,
+      roomCenter: { x: building.x, z: minZ + roomDepth / 2 },
+      roomSize: { w: building.w, d: roomDepth },
+      corridorCenter: { x: building.x, z: maxZ - corridorWidth / 2 },
+      corridorSize: { w: building.w, d: corridorWidth },
+      boundaryZ: maxZ - corridorWidth,
+    };
+  }
+
+  const roomWidth = Math.max(1.2, building.w - corridorWidth);
+  return {
+    longAxis,
+    corridorWidth,
+    minX,
+    maxX,
+    minZ,
+    maxZ,
+    roomCenter: { x: minX + roomWidth / 2, z: building.z },
+    roomSize: { w: roomWidth, d: building.d },
+    corridorCenter: { x: maxX - corridorWidth / 2, z: building.z },
+    corridorSize: { w: corridorWidth, d: building.d },
+    boundaryX: maxX - corridorWidth,
+  };
+}
+
+function addFloorLayoutGuides(group, building, floorStep, highlightedFloor, highlightedRoom, isSelected) {
+  const layout = getBuildingLayout(building);
+
+  for (let floor = 1; floor <= building.floors; floor += 1) {
+    const isCurrentFloor = !highlightedFloor || highlightedFloor === floor;
+    if (highlightedFloor && !isCurrentFloor) continue;
+
+    const roomsOnFloor = building.rooms?.[floor] || [];
+    const partitionCount = Math.max(roomsOnFloor.length || 0, Math.min(8, Math.max(2, Math.floor((layout.longAxis === 'x' ? building.w : building.d) / 7))));
+    const y = (floor - 0.5) * floorStep - 0.5;
+    const opacity = highlightedFloor ? 0.48 : isSelected ? 0.28 : 0.16;
+
+    const roomPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(layout.roomSize.w, 0.035, layout.roomSize.d),
+      new THREE.MeshBasicMaterial({ color: '#e6f2f7', transparent: true, opacity: opacity * 0.55, depthWrite: false }),
+    );
+    roomPlate.position.set(layout.roomCenter.x, y, layout.roomCenter.z);
+    roomPlate.renderOrder = 5;
+    group.add(roomPlate);
+
+    const corridorPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(layout.corridorSize.w, 0.045, layout.corridorSize.d),
+      new THREE.MeshBasicMaterial({ color: '#f3c76f', transparent: true, opacity, depthWrite: false }),
+    );
+    corridorPlate.position.set(layout.corridorCenter.x, y + 0.015, layout.corridorCenter.z);
+    corridorPlate.renderOrder = 6;
+    group.add(corridorPlate);
+
+    const selectedRoomIndex = highlightedRoom ? roomsOnFloor.findIndex((room) => roomNamesMatch(room, highlightedRoom)) : -1;
+    if (selectedRoomIndex >= 0) {
+      const bounds = roomBoundsForIndex(building, layout, roomsOnFloor.length, selectedRoomIndex);
+      const selectedRoomPlate = new THREE.Mesh(
+        new THREE.BoxGeometry(bounds.w, 0.07, bounds.d),
+        new THREE.MeshBasicMaterial({ color: '#5ee0b8', transparent: true, opacity: 0.62, depthWrite: false }),
+      );
+      selectedRoomPlate.position.set(bounds.x, y + 0.08, bounds.z);
+      selectedRoomPlate.renderOrder = 12;
+      group.add(selectedRoomPlate);
+    }
+
+    const dividerPoints = [];
+    const addSegment = (a, b) => {
+      dividerPoints.push(new THREE.Vector3(a.x, y + 0.05, a.z), new THREE.Vector3(b.x, y + 0.05, b.z));
+    };
+
+    if (layout.longAxis === 'x') {
+      addSegment({ x: layout.minX, z: layout.boundaryZ }, { x: layout.maxX, z: layout.boundaryZ });
+      for (let index = 1; index < partitionCount; index += 1) {
+        const x = layout.minX + (building.w * index) / partitionCount;
+        addSegment({ x, z: layout.minZ }, { x, z: layout.boundaryZ });
+      }
+      addCableTrayLine(group, [{ x: layout.minX + 0.65, z: layout.corridorCenter.z }, { x: layout.maxX - 0.65, z: layout.corridorCenter.z }], y, opacity);
+    } else {
+      addSegment({ x: layout.boundaryX, z: layout.minZ }, { x: layout.boundaryX, z: layout.maxZ });
+      for (let index = 1; index < partitionCount; index += 1) {
+        const z = layout.minZ + (building.d * index) / partitionCount;
+        addSegment({ x: layout.minX, z }, { x: layout.boundaryX, z });
+      }
+      addCableTrayLine(group, [{ x: layout.corridorCenter.x, z: layout.minZ + 0.65 }, { x: layout.corridorCenter.x, z: layout.maxZ - 0.65 }], y, opacity);
+    }
+
+    if (dividerPoints.length) {
+      const lines = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(dividerPoints),
+        new THREE.LineBasicMaterial({ color: '#49666f', transparent: true, opacity: Math.min(0.78, opacity + 0.18), depthWrite: false }),
+      );
+      lines.renderOrder = 9;
+      group.add(lines);
+    }
+
+    if (isSelected && isCurrentFloor) {
+      const corridorLabel = createLabel('走廊 / 線槽', [layout.corridorCenter.x, y + 0.34, layout.corridorCenter.z], [4.6, 0.76, 1], '#6b3f00', 'rgba(255,246,225,0.9)');
+      corridorLabel.renderOrder = 17;
+      group.add(corridorLabel);
+    }
+  }
+}
+
+function addCableTrayLine(group, endpoints, y, opacity) {
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(endpoints.map((point) => new THREE.Vector3(point.x, y + 0.09, point.z))),
+    new THREE.LineBasicMaterial({ color: '#9a6b1e', transparent: true, opacity: Math.min(0.92, opacity + 0.22), depthWrite: false }),
+  );
+  line.renderOrder = 10;
+  group.add(line);
+}
+
+function roomLabelPosition(building, layout, rooms, index, y) {
+  const count = Math.max(1, rooms.length);
+  if (layout.longAxis === 'x') {
+    return [layout.minX + (building.w * (index + 0.5)) / count, y, layout.roomCenter.z];
+  }
+  return [layout.roomCenter.x, y, layout.minZ + (building.d * (index + 0.5)) / count];
+}
+
+function roomBoundsForIndex(building, layout, roomCount, index) {
+  const count = Math.max(1, roomCount || 1);
+  if (layout.longAxis === 'x') {
+    const roomWidth = building.w / count;
+    return {
+      x: layout.minX + roomWidth * (index + 0.5),
+      z: layout.roomCenter.z,
+      w: Math.max(0.8, roomWidth - 0.12),
+      d: Math.max(0.8, layout.roomSize.d - 0.12),
+    };
+  }
+  const roomDepth = building.d / count;
+  return {
+    x: layout.roomCenter.x,
+    z: layout.minZ + roomDepth * (index + 0.5),
+    w: Math.max(0.8, layout.roomSize.w - 0.12),
+    d: Math.max(0.8, roomDepth - 0.12),
+  };
+}
+
+function roomNamesMatch(a, b) {
+  const left = roomMatchKey(a);
+  const right = roomMatchKey(b);
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function deviceMatchesRoom(device, room) {
+  if (!room) return true;
+  const deviceRoom = device.room || inferRoomNameFromText(String(device.location || '') + ' ' + String(device.name || '') + ' ' + String(device.id || ''));
+  return roomNamesMatch(deviceRoom, room);
+}
+
+function roomOccupancyPosition(device, heightScale, fallbackPosition) {
+  const building = buildings.find((item) => item.id === device.building);
+  if (!building) return { x: fallbackPosition.x + 0.72, y: fallbackPosition.y - 0.56, z: fallbackPosition.z + 0.72 };
+
+  const floorStep = BUILDING_FLOOR_HEIGHT * heightScale;
+  const floor = Math.max(1, parseDeviceFloor(device.floor));
+  const y = (floor - 0.5) * floorStep - 0.56;
+  const layout = getBuildingLayout(building);
+  const roomsOnFloor = building.rooms?.[floor] || [];
+  const deviceRoom = device.room || inferRoomNameFromText(`${device.location || ''} ${device.name || ''} ${device.id || ''}`);
+  const roomIndex = roomsOnFloor.findIndex((room) => roomNamesMatch(room, deviceRoom));
+
+  if (roomIndex < 0) {
+    const inset = 0.72;
+    return {
+      x: clamp(fallbackPosition.x + inset, layout.minX + inset, layout.maxX - inset),
+      y,
+      z: clamp(fallbackPosition.z + inset, layout.minZ + inset, layout.maxZ - inset),
+    };
+  }
+
+  const bounds = roomBoundsForIndex(building, layout, roomsOnFloor.length, roomIndex);
+  if (layout.longAxis === 'x') {
+    return {
+      x: bounds.x,
+      y,
+      z: clamp(bounds.z - Math.min(1.15, bounds.d * 0.28), layout.minZ + 0.7, layout.maxZ - 0.7),
+    };
+  }
+
+  return {
+    x: clamp(bounds.x - Math.min(1.15, bounds.w * 0.28), layout.minX + 0.7, layout.maxX - 0.7),
+    y,
+    z: bounds.z,
+  };
+}
+
+function addFloorLabels(group, building, floorStep, height, highlightedFloor = null) {
   const labelX = building.x - building.w / 2 + Math.min(2, building.w * 0.18);
   const labelZ = building.z + building.d / 2 + 0.96;
 
   for (let floor = 1; floor <= building.floors; floor += 1) {
     const y = (floor - 0.5) * floorStep;
-    const label = createLabel(`${floor}F`, [labelX, y, labelZ], [3.1, 0.96, 1], '#17252a', 'rgba(255,255,255,0.86)');
+    const isCurrent = !highlightedFloor || highlightedFloor === floor;
+    const label = createLabel(`樓層 ${floor}F`, [labelX, y, labelZ], [isCurrent ? 4.25 : 3.35, isCurrent ? 0.98 : 0.78, 1], '#15323b', isCurrent ? 'rgba(238,248,255,0.9)' : 'rgba(238,248,255,0.42)');
+    label.material.opacity = isCurrent ? 1 : 0.22;
     group.add(label);
   }
 
@@ -2015,7 +3086,7 @@ function addFloorLabels(group, building, floorStep, height) {
 
   const sideX = building.x + building.w / 2 + 0.62;
   const sideZ = building.z + building.d / 2 - Math.min(2, building.d * 0.18);
-  const topLabel = createLabel(buildingLevelSummary(building), [sideX, Math.max(1.2, height - 0.65), sideZ], [3.6, 0.86, 1], '#223137', 'rgba(255,255,255,0.76)');
+  const topLabel = createLabel(`樓層｜${buildingLevelSummary(building)}`, [sideX, Math.max(1.2, height - 0.65), sideZ], [4.4, 0.86, 1], '#223137', 'rgba(238,248,255,0.84)');
   group.add(topLabel);
 
   if (building.d >= 12) {
@@ -2023,41 +3094,39 @@ function addFloorLabels(group, building, floorStep, height) {
     const cornerZ = building.z + building.d / 2 - Math.min(1.6, building.d * 0.12);
     for (let floor = 1; floor <= building.floors; floor += 1) {
       const y = (floor - 0.5) * floorStep;
-      const label = createLabel(`${floor}F`, [cornerX, y, cornerZ], [2.65, 0.84, 1], '#17252a', 'rgba(255,255,255,0.8)');
+      const isCurrent = !highlightedFloor || highlightedFloor === floor;
+      const label = createLabel(`樓層 ${floor}F`, [cornerX, y, cornerZ], [isCurrent ? 3.8 : 3.0, isCurrent ? 0.84 : 0.68, 1], '#15323b', isCurrent ? 'rgba(238,248,255,0.84)' : 'rgba(238,248,255,0.38)');
+      label.material.opacity = isCurrent ? 1 : 0.2;
       group.add(label);
     }
   }
 }
 
-function addRoomLabels(group, building, floorStep, showRooms, interactive, highlightedFloor, isActive) {
+function addRoomLabels(group, building, floorStep, showRooms, interactive, highlightedFloor, highlightedRoom, isActive) {
   if (!showRooms || !building.rooms) return;
 
-  const longAxis = building.w >= building.d ? 'x' : 'z';
-  const color = '#26383d';
+  const layout = getBuildingLayout(building);
+  const color = '#21424c';
   const floorEntries = Object.entries(building.rooms)
     .map(([floor, rooms]) => [Number(floor), rooms])
     .sort(([a], [b]) => a - b);
 
   floorEntries.forEach(([floor, rooms]) => {
-    const y = (floor - 0.5) * floorStep - 0.34;
-    const count = rooms.length;
-    const usable = longAxis === 'x' ? building.w * 0.72 : building.d * 0.72;
-    const step = count <= 1 ? 0 : usable / (count - 1);
-    const start = -usable / 2;
+    if (isActive && highlightedFloor && floor !== highlightedFloor) return;
+    const y = (floor - 0.5) * floorStep - 0.2;
 
     rooms.forEach((room, index) => {
       const isCurrent = highlightedFloor === floor;
-      const offset = start + step * index;
-      const position = longAxis === 'x'
-        ? [building.x + offset, y, building.z + building.d / 2 + 1.45]
-        : [building.x + building.w / 2 + 1.4, y, building.z + offset];
-      const scaleBoost = isCurrent ? 1.2 : 1;
-      const scale = String(room).length >= 5
-        ? [3.15 * scaleBoost, 0.76 * scaleBoost, 1]
-        : [2.42 * scaleBoost, 0.72 * scaleBoost, 1];
-      const label = createLabel(room, position, scale, color, isCurrent ? 'rgba(217,255,242,0.95)' : 'rgba(255,255,255,0.86)');
-      label.material.opacity = isActive && highlightedFloor && !isCurrent ? 0.44 : 1;
-      label.renderOrder = isCurrent ? 20 : 9;
+      const isSelectedRoom = isCurrent && highlightedRoom && roomNamesMatch(room, highlightedRoom);
+      const position = roomLabelPosition(building, layout, rooms, index, y);
+      const labelText = '室｜' + room;
+      const scaleBoost = isSelectedRoom ? 1.24 : isCurrent ? 1.12 : 1;
+      const scale = String(labelText).length >= 6
+        ? [4.55 * scaleBoost, 0.9 * scaleBoost, 1]
+        : [3.55 * scaleBoost, 0.86 * scaleBoost, 1];
+      const label = createLabel(labelText, position, scale, isSelectedRoom ? '#063f36' : color, isSelectedRoom ? 'rgba(223,247,236,0.98)' : isCurrent ? 'rgba(235,250,255,0.96)' : 'rgba(235,250,255,0.78)');
+      label.material.opacity = isActive && highlightedFloor && !isCurrent ? 0.14 : 1;
+      label.renderOrder = isSelectedRoom ? 24 : isCurrent ? 20 : 11;
       label.userData.entity = building;
       interactive.push(label);
       group.add(label);
@@ -2144,16 +3213,79 @@ function getActiveBuildingId(selectedId) {
 function getInitialFloorForEntity(entity) {
   if (!entity) return null;
   if (entity.floors) return entity.floors;
-  if (entity.type === 'ap' || entity.type === 'switch') {
+  if (entity.type === 'ap' || entity.type === 'switch' || entity.type === 'server') {
     const floor = parseDeviceFloor(entity.floor);
     return floor > 0 ? floor : null;
   }
   return null;
 }
 
-function floorFromPointer(event, rect, floors) {
-  const ratio = 1 - Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
-  return Math.min(floors, Math.max(1, Math.floor(ratio * floors) + 1));
+function floorHotkeyFromEvent(event, selectedEntity) {
+  if (!selectedEntity?.floors || event.altKey || event.metaKey || event.ctrlKey) return null;
+  const isNumpad = event.code?.startsWith('Numpad');
+  const isDigit = event.code?.startsWith('Digit');
+  if (!isNumpad && !isDigit) return null;
+  const value = Number(event.key);
+  if (!Number.isInteger(value)) return null;
+  const requestedFloor = value === 0 ? 10 : value;
+  const maxFloor = Math.max(1, Number(selectedEntity.floors) || 1);
+  return requestedFloor >= 1 && requestedFloor <= maxFloor ? requestedFloor : null;
+}
+function floorFromPointer(event, rect, building, camera, heightScale, currentFloor = null) {
+  const floors = Math.max(1, Number(building?.floors) || 1);
+  const height = Math.max(2.7, floors * BUILDING_FLOOR_HEIGHT * heightScale);
+  const bounds = buildingScreenBounds(building, height, camera, rect);
+  if (!bounds) return null;
+
+  const xPad = Math.max(26, bounds.width * 0.12);
+  const yPad = Math.max(18, bounds.height * 0.08);
+  const inX = event.clientX >= bounds.left - xPad && event.clientX <= bounds.right + xPad;
+  const inY = event.clientY >= bounds.top - yPad && event.clientY <= bounds.bottom + yPad;
+  if (!inX || !inY) return null;
+
+  const y = clamp(event.clientY, bounds.top, bounds.bottom);
+  const bandHeight = bounds.height / floors;
+  const rawFloor = Math.min(floors, Math.max(1, floors - Math.floor((y - bounds.top) / Math.max(1, bandHeight))));
+  const activeFloor = Math.min(floors, Math.max(1, Number(currentFloor) || rawFloor));
+  if (rawFloor === activeFloor) return rawFloor;
+
+  const activeTop = bounds.bottom - activeFloor * bandHeight;
+  const activeBottom = bounds.bottom - (activeFloor - 1) * bandHeight;
+  const hysteresis = Math.max(5, Math.min(18, bandHeight * 0.16));
+  if (rawFloor > activeFloor && y < activeTop - hysteresis) return rawFloor;
+  if (rawFloor < activeFloor && y > activeBottom + hysteresis) return rawFloor;
+  return activeFloor;
+}
+
+function buildingScreenBounds(building, height, camera, rect) {
+  const minX = building.x - building.w / 2;
+  const maxX = building.x + building.w / 2;
+  const minZ = building.z - building.d / 2;
+  const maxZ = building.z + building.d / 2;
+  const corners = [
+    [minX, 0, minZ], [minX, 0, maxZ], [maxX, 0, minZ], [maxX, 0, maxZ],
+    [minX, height, minZ], [minX, height, maxZ], [maxX, height, minZ], [maxX, height, maxZ],
+  ];
+
+  const points = corners.map(([x, y, z]) => projectToScreen(new THREE.Vector3(x, y, z), camera, rect)).filter(Boolean);
+  if (points.length === 0) return null;
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const left = Math.min(...xs);
+  const right = Math.max(...xs);
+  const top = Math.min(...ys);
+  const bottom = Math.max(...ys);
+  if (right - left < 4 || bottom - top < 4) return null;
+  return { left, right, top, bottom, width: right - left, height: bottom - top };
+}
+
+function projectToScreen(point, camera, rect) {
+  const projected = point.project(camera);
+  if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || projected.z < -1 || projected.z > 1) return null;
+  return {
+    x: rect.left + ((projected.x + 1) / 2) * rect.width,
+    y: rect.top + ((1 - projected.y) / 2) * rect.height,
+  };
 }
 
 function isTypingTarget(target) {
@@ -2179,13 +3311,90 @@ function zoomCamera(camera, controls, scale) {
   controls.update();
 }
 
+function getViewLevel(distance) {
+  if (distance > 108) return 'overview';
+  if (distance > 64) return 'campus';
+  return 'detail';
+}
+
+function rescaleSceneLabels(root, camera, userScale = 1) {
+  root.traverse((child) => {
+    const baseScale = child.userData?.labelBaseScale;
+    if (!baseScale) return;
+    child.getWorldPosition(LABEL_WORLD_POSITION);
+    const distance = camera.position.distanceTo(LABEL_WORLD_POSITION);
+    const factor = clamp(distance / LABEL_REFERENCE_DISTANCE, LABEL_MIN_SCALE, LABEL_MAX_SCALE) * userScale;
+    child.scale.set(baseScale.x * factor, baseScale.y * factor, baseScale.z);
+  });
+}
+
 function getBuildingFocus(building, heightScale) {
-  const height = Math.max(2.7, building.floors * 1.85 * heightScale);
+  const height = Math.max(2.7, building.floors * BUILDING_FLOOR_HEIGHT * heightScale);
   const span = Math.max(building.w, building.d);
   const distance = Math.max(24, span * 1.18);
   const lookAt = new THREE.Vector3(building.x, height * 0.48, building.z);
   const position = new THREE.Vector3(building.x + distance * 0.52, height + 15, building.z + distance * 0.88);
   return { position, lookAt };
+}
+
+function getCampusCameraPreset(name = 'home') {
+  const bounds = campusBoundsForBuildings(buildings);
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerZ = (bounds.minZ + bounds.maxZ) / 2;
+  const width = Math.max(18, bounds.maxX - bounds.minX);
+  const depth = Math.max(18, bounds.maxZ - bounds.minZ);
+  const span = Math.max(width, depth, 54);
+  const height = Math.max(58, Math.min(160, span * 0.78));
+  const lookAt = [centerX, 0, centerZ];
+
+  if (name === 'top') {
+    return {
+      position: [centerX, Math.max(96, Math.min(190, span * 1.55)), centerZ + 0.01],
+      target: lookAt,
+    };
+  }
+
+  if (name === 'east') {
+    return {
+      position: [centerX + span * 1.12, Math.max(46, span * 0.48), centerZ + depth * 0.08],
+      target: lookAt,
+    };
+  }
+
+  return {
+    position: [centerX + span * 0.58, height, centerZ + span * 0.78],
+    target: [centerX, 0, centerZ + depth * 0.04],
+  };
+}
+
+function campusBoundsForBuildings(buildingList = []) {
+  const validBuildings = buildingList.filter((building) => Number.isFinite(Number(building.x)) && Number.isFinite(Number(building.z)));
+  if (!validBuildings.length) {
+    return {
+      minX: -CAMPUS.width / 2,
+      maxX: CAMPUS.width / 2,
+      minZ: -CAMPUS.depth / 2,
+      maxZ: CAMPUS.depth / 2,
+    };
+  }
+
+  return validBuildings.reduce((bounds, building) => {
+    const x = Number(building.x) || 0;
+    const z = Number(building.z) || 0;
+    const w = Math.max(1, Number(building.w) || 1);
+    const d = Math.max(1, Number(building.d) || 1);
+    return {
+      minX: Math.min(bounds.minX, x - w / 2),
+      maxX: Math.max(bounds.maxX, x + w / 2),
+      minZ: Math.min(bounds.minZ, z - d / 2),
+      maxZ: Math.max(bounds.maxZ, z + d / 2),
+    };
+  }, {
+    minX: Infinity,
+    maxX: -Infinity,
+    minZ: Infinity,
+    maxZ: -Infinity,
+  });
 }
 
 function getDeviceFocus(device, heightScale) {
@@ -2223,7 +3432,7 @@ function getDeviceRenderPosition(device, heightScale) {
   const building = buildings.find((item) => item.id === device.building);
   if (!building || device.building === 'outdoor') return { x: device.x, y: 1.6, z: device.z, leader: false };
 
-  const floorStep = 1.85 * heightScale;
+  const floorStep = BUILDING_FLOOR_HEIGHT * heightScale;
   const floorNumber = parseDeviceFloor(device.floor);
   const maxHeight = Math.max(2.7, building.floors * floorStep);
   const y = floorNumber <= 0
@@ -2236,6 +3445,15 @@ function getDeviceRenderPosition(device, heightScale) {
   const maxZ = building.z + building.d / 2;
   const inside = device.x > minX && device.x < maxX && device.z > minZ && device.z < maxZ;
   if (!inside) return { x: device.x, y, z: device.z, leader: false };
+
+  if (!isEdgePlacement(device)) {
+    return {
+      x: Math.min(maxX - 0.8, Math.max(minX + 0.8, device.x)),
+      y,
+      z: Math.min(maxZ - 0.8, Math.max(minZ + 0.8, device.z)),
+      leader: false,
+    };
+  }
 
   const distances = [
     { side: 'west', value: device.x - minX },
@@ -2261,7 +3479,76 @@ function parseDeviceFloor(floor) {
   return match ? Number(match[1]) : 1;
 }
 
-function addHeatZone(group, zone, mode, selectedId, interactive) {
+function shouldRenderDevice(device, sceneView, activeBuildingId, selectedId) {
+  if (selectedId === device.id) return true;
+  if (device.status === 'offline') return true;
+  if (sceneView === 'overview') return device.type === 'ap' || device.type === 'switch';
+  if (sceneView === 'focus') return device.building === activeBuildingId;
+  if (sceneView === 'campus') return device.status !== 'online' || /核心|匯聚|骨幹/i.test(device.role || '');
+  return true;
+}
+
+function shouldRenderDeviceForScope(device, floorOnly, activeBuildingId, selectedFloor, selectedRoom, selectedId) {
+  if (!floorOnly || !activeBuildingId || !selectedFloor) return true;
+  if (selectedId === device.id) return true;
+  if (device.building !== activeBuildingId) return false;
+  if (parseDeviceFloor(device.floor) !== selectedFloor) return false;
+  if (selectedRoom?.buildingId === activeBuildingId && selectedRoom.floor === selectedFloor) {
+    return deviceMatchesRoom(device, selectedRoom.room);
+  }
+  return true;
+}
+
+function isPriorityDeviceLabel(device) {
+  const text = [device.id, device.name, device.role, device.location, device.roomName, device.room]
+    .filter(Boolean)
+    .join(' ');
+  return device.type === 'server' || /核心|匯聚|骨幹|控制器|controller|MDF|IDF/i.test(text);
+}
+
+function isFloorServiceSwitch(device) {
+  if (device?.type !== 'switch') return false;
+  const text = [device.id, device.name, device.role, device.location, device.room]
+    .filter(Boolean)
+    .join(' ');
+  if (/核心|匯聚|L2 接取|無線骨幹|骨幹交換器|MDF|IDF|機房|前走廊|後走廊/i.test(text)) return true;
+  if (/邊緣|教室邊緣|DGS-1210-10P|WS6-DGS-1210-10P/i.test(text)) return false;
+  return /^CKJHS-L2-/i.test(device.id || '') || /SW\.24/i.test(device.id || '');
+}
+
+function isCrowdedAp(device) {
+  if (device?.type !== 'ap') return false;
+  return Number(device.users || 0) >= AP_LOAD_LIMITS.highUsers && Number(device.mbps || 0) > AP_LOAD_LIMITS.highMbps;
+}
+
+function shouldShowDeviceLabel(device, sceneView, activeBuildingId, selected, isFault, floorDimmed) {
+  if (floorDimmed || sceneView === 'overview') return false;
+  if (selected || isFault || device.status === 'warning') return true;
+  if (sceneView === 'focus' && isFloorServiceSwitch(device)) return true;
+  return isPriorityDeviceLabel(device) && sceneView !== 'overview';
+}
+
+function shouldRenderHeatZone(zone, sceneView, activeBuilding, selectedId) {
+  if (selectedId === zone.id) return true;
+  if (sceneView !== 'focus' || !activeBuilding) return true;
+  return zoneOverlapsBuilding(zone, activeBuilding);
+}
+
+function zoneOverlapsBuilding(zone, building) {
+  const zw = zone.type === 'circle' ? (zone.rx || 1) * 2 : zone.w;
+  const zd = zone.type === 'circle' ? (zone.rz || 1) * 2 : zone.d;
+  const zLeft = zone.x - zw / 2;
+  const zRight = zone.x + zw / 2;
+  const zTop = zone.z - zd / 2;
+  const zBottom = zone.z + zd / 2;
+  const bLeft = building.x - building.w / 2;
+  const bRight = building.x + building.w / 2;
+  const bTop = building.z - building.d / 2;
+  const bBottom = building.z + building.d / 2;
+  return zLeft <= bRight && zRight >= bLeft && zTop <= bBottom && zBottom >= bTop;
+}
+
+function addHeatZone(group, zone, mode, selectedId, interactive, sceneView = 'campus') {
   const color = zoneColor(zone, mode);
   const opacity = mode === 'planning' ? 0.22 : selectedId === zone.id ? 0.68 : 0.48;
   const geometry = zone.type === 'circle' ? new THREE.CircleGeometry(1, 80) : new THREE.PlaneGeometry(zone.w, zone.d);
@@ -2307,8 +3594,12 @@ function addHeatZone(group, zone, mode, selectedId, interactive) {
     group.add(beacon);
   }
 
-  group.add(createLabel(zone.label, [zone.x, 1.05, zone.z], [Math.min(14, (zone.w || zone.rx) + 4), 2.2, 1], '#17252a'));
+  if (sceneView !== 'overview' && selectedId === zone.id) {
+    const zoneSummary = `${zone.label} · 訊號${SIGNAL[zone.signal].label} / ${TRAFFIC[zone.traffic].label}流量`;
+    group.add(createLabel(zoneSummary, [zone.x, 1.05, zone.z], [Math.min(11, (zone.w || zone.rx) + 3), 1.35, 1], '#17252a'));
+  }
 }
+
 
 function cableColorForLink(link, selected, fallbackStatus) {
   const status = link?.status || fallbackStatus;
@@ -2318,43 +3609,49 @@ function cableColorForLink(link, selected, fallbackStatus) {
   return link?.medium === 'fiber' ? CABLING.fiber.color : CABLING.copper.color;
 }
 
-function addCableInfrastructure(group, mode, selectedId, heightScale, interactive) {
-  const floorStep = 1.85 * heightScale;
-  const activeBuildingId = getActiveBuildingId(selectedId);
+function addCableInfrastructure(group, mode, selectedId, activeBuildingId, selectedFloor, selectedRoom, floorOnly, heightScale, interactive, opacityScale = 1) {
+  const floorStep = BUILDING_FLOOR_HEIGHT * heightScale;
+  const cableOpacity = clamp(opacityScale, 0.12, 1);
+  const floorScope = floorOnly && activeBuildingId && selectedFloor ? Math.max(1, Number(selectedFloor) || 1) : null;
   const selectedDevice = devices.find((device) => device.id === selectedId);
   const coreDevice = devices.find((device) => device.type === 'switch' && /core|核心/i.test(`${device.id} ${device.name}`))
     || devices.find((device) => device.type === 'switch')
     || devices[0];
   const corePoint = coreDevice ? getDeviceRenderPosition(coreDevice, heightScale) : { x: 0, y: 0.25, z: 0 };
+  const scopedBuildings = activeBuildingId ? buildings.filter((building) => building.id === activeBuildingId) : buildings;
 
-  buildings.forEach((building) => {
-    const isActive = activeBuildingId === building.id || mode === 'cabling';
-    addBuildingCableTrays(group, building, floorStep, isActive, selectedId);
-    addBuildingRiser(group, building, floorStep, isActive);
+  scopedBuildings.forEach((building) => {
+    const isActive = !activeBuildingId || activeBuildingId === building.id || mode === 'cabling';
+    addBuildingCableTrays(group, building, floorStep, isActive, selectedId, floorScope, cableOpacity);
+    addBuildingRiser(group, building, floorStep, isActive, floorScope, cableOpacity);
 
     const riser = getRiserPoint(building, 1, floorStep);
-    if (coreDevice && building.id !== coreDevice.building) {
+    if (!activeBuildingId && coreDevice && building.id !== coreDevice.building) {
       const highlighted = selectedDevice?.building === building.id || selectedId === building.id;
       addCableTube(group, [
         new THREE.Vector3(corePoint.x, 0.22, corePoint.z),
         new THREE.Vector3(corePoint.x, 0.22, riser.z),
         new THREE.Vector3(riser.x, 0.22, riser.z),
         new THREE.Vector3(riser.x, riser.y, riser.z),
-      ], highlighted ? CABLING.selected.color : CABLING.fiber.color, highlighted ? 0.13 : 0.08, highlighted ? 0.92 : 0.42, highlighted ? 48 : 16);
+      ], highlighted ? CABLING.selected.color : CABLING.fiber.color, highlighted ? 0.13 : 0.08, (highlighted ? 0.92 : 0.42) * cableOpacity, highlighted ? 48 : 16);
     }
   });
 
   devices.forEach((device) => {
     if (!device.building || device.building === 'outdoor') return;
+    if (activeBuildingId && device.building !== activeBuildingId) return;
+    if (!shouldRenderDeviceForScope(device, floorOnly, activeBuildingId, selectedFloor, selectedRoom, selectedId)) return;
     const building = buildings.find((item) => item.id === device.building);
     if (!building) return;
-    const selected = selectedId === device.id || selectedId === building.id;
-    addDeviceCableDrop(group, building, device, floorStep, heightScale, selected, interactive);
+    const selected = selectedId === device.id;
+    const buildingSelected = selectedId === building.id;
+    addDeviceCableDrop(group, building, device, floorStep, heightScale, selected, buildingSelected, interactive, cableOpacity);
   });
 
-  if (coreDevice) {
+  const coreInFloorScope = !floorScope || selectedId === coreDevice?.id || parseDeviceFloor(coreDevice?.floor) === floorScope;
+  if (coreDevice && coreInFloorScope && (!activeBuildingId || coreDevice.building === activeBuildingId || selectedId === coreDevice.id)) {
     const position = getDeviceRenderPosition(coreDevice, heightScale);
-    const coreNode = createCableNode(CABLING.fiber.color, selectedId === coreDevice.id ? 0.72 : 0.5);
+    const coreNode = createCableNode(CABLING.fiber.color, (selectedId === coreDevice.id ? 0.72 : 0.5) * cableOpacity);
     coreNode.position.set(position.x, position.y + 0.55, position.z);
     coreNode.userData.entity = coreDevice;
     interactive.push(coreNode);
@@ -2365,71 +3662,88 @@ function addCableInfrastructure(group, mode, selectedId, heightScale, interactiv
   }
 }
 
-function addBuildingCableTrays(group, building, floorStep, isActive, selectedId) {
-  const floorsToDraw = Array.from({ length: building.floors }, (_, index) => index + 1);
-  const opacity = isActive ? 0.72 : 0.32;
+function addBuildingCableTrays(group, building, floorStep, isActive, selectedId, floorScope = null, opacityScale = 1) {
+  const scopedFloor = floorScope ? clamp(Math.round(floorScope), 1, building.floors) : null;
+  const floorsToDraw = scopedFloor ? [scopedFloor] : Array.from({ length: building.floors }, (_, index) => index + 1);
+  const opacity = (isActive ? 0.72 : 0.32) * opacityScale;
   floorsToDraw.forEach((floor) => {
     const side = getCableTraySide(building, floor, floorStep);
     addLadderTray(group, side, isActive ? CABLING.tray.color : '#8b989c', opacity, isActive ? 28 : 12);
-    if ((isActive && floor === Math.min(building.floors, 2)) || selectedId === building.id) {
+    if ((isActive && (floorScope ? floor === scopedFloor : floor === Math.min(building.floors, 2))) || selectedId === building.id) {
       const center = midpoint(side.a, side.b);
-      const label = createLabel('走廊線槽', [center.x, center.y + 0.48, center.z], [4.2, 0.82, 1], '#29363b', 'rgba(255,255,255,0.76)');
+      const labelText = floorScope ? `${floor}F 走廊線槽` : '走廊線槽';
+      const label = createLabel(labelText, [center.x, center.y + 0.48, center.z], [floorScope ? 5.2 : 4.2, 0.82, 1], '#29363b', 'rgba(255,255,255,0.76)');
       label.renderOrder = 30;
       group.add(label);
     }
   });
 }
 
-function addBuildingRiser(group, building, floorStep, isActive) {
-  const bottom = getRiserPoint(building, 1, floorStep);
-  const top = getRiserPoint(building, building.floors, floorStep);
+function addBuildingRiser(group, building, floorStep, isActive, floorScope = null, opacityScale = 1) {
+  const scopedFloor = floorScope ? clamp(Math.round(floorScope), 1, building.floors) : null;
+  const bottom = getRiserPoint(building, scopedFloor || 1, floorStep);
+  const top = getRiserPoint(building, scopedFloor || building.floors, floorStep);
   bottom.y = 0.24;
-  top.y += 0.72;
-  addCableTube(group, [new THREE.Vector3(bottom.x, bottom.y, bottom.z), new THREE.Vector3(top.x, top.y, top.z)], CABLING.riser.color, isActive ? 0.085 : 0.055, isActive ? 0.72 : 0.38, isActive ? 32 : 14);
+  if (scopedFloor) {
+    bottom.y = Math.max(0.24, bottom.y - floorStep * 0.42);
+    top.y = Math.min(building.floors * floorStep + 0.72, top.y + floorStep * 0.42);
+  } else {
+    top.y += 0.72;
+  }
+  addCableTube(group, [new THREE.Vector3(bottom.x, bottom.y, bottom.z), new THREE.Vector3(top.x, top.y, top.z)], CABLING.riser.color, isActive ? 0.085 : 0.055, (isActive ? 0.72 : 0.38) * opacityScale, isActive ? 32 : 14);
 
   if (isActive) {
-    for (let floor = 1; floor <= building.floors; floor += 1) {
+    const floorsToDraw = scopedFloor ? [scopedFloor] : Array.from({ length: building.floors }, (_, index) => index + 1);
+    floorsToDraw.forEach((floor) => {
       const point = getRiserPoint(building, floor, floorStep);
-      const idf = createCableNode(CABLING.riser.color, 0.52, 0.52);
+      const idf = createCableNode(CABLING.riser.color, 0.52 * opacityScale, 0.52);
       idf.position.set(point.x, point.y, point.z);
       group.add(idf);
-      if (floor === 1 || floor === building.floors) {
-        const label = createLabel(floor === 1 ? 'MDF/IDF' : `${floor}F IDF`, [point.x, point.y + 0.8, point.z], [3.8, 0.82, 1], '#163265', 'rgba(232,241,255,0.82)');
+      if (scopedFloor || floor === 1 || floor === building.floors) {
+        const label = createLabel(scopedFloor ? `${floor}F IDF` : floor === 1 ? 'MDF/IDF' : `${floor}F IDF`, [point.x, point.y + 0.8, point.z], [3.8, 0.82, 1], '#163265', 'rgba(232,241,255,0.82)');
         label.renderOrder = 34;
         group.add(label);
       }
-    }
+    });
   }
 }
 
-function addDeviceCableDrop(group, building, device, floorStep, heightScale, selected, interactive) {
+function addDeviceCableDrop(group, building, device, floorStep, heightScale, selected, buildingSelected, interactive, opacityScale = 1) {
   const floor = Math.max(1, parseDeviceFloor(device.floor));
   const devicePoint = getDeviceRenderPosition(device, heightScale);
   const trayPoint = getNearestTrayPoint(building, floor, floorStep, devicePoint);
   const link = getNetworkLinkForDevice(device.id);
   const faulted = device.status === 'offline' || link?.status === 'offline';
   const color = cableColorForLink(link, selected, device.status);
-  const opacity = selected || faulted ? 0.95 : 0.46;
-  const radius = selected || faulted ? 0.075 : 0.045;
+  const opacity = (selected || faulted ? 0.95 : buildingSelected ? 0.62 : 0.46) * opacityScale;
+  const radius = selected || faulted ? 0.075 : buildingSelected ? 0.052 : 0.045;
   const branch = addCableTube(group, [
     new THREE.Vector3(trayPoint.x, trayPoint.y, trayPoint.z),
     new THREE.Vector3(devicePoint.x, trayPoint.y, devicePoint.z),
     new THREE.Vector3(devicePoint.x, devicePoint.y - 0.35, devicePoint.z),
-  ], color, radius, opacity, selected ? 52 : 26);
+  ], color, radius, opacity, selected || faulted ? 52 : buildingSelected ? 34 : 26);
   branch.userData.entity = device;
   interactive.push(branch);
 
-  if (selected) {
+  if (selected || faulted) {
     const riser = getRiserPoint(building, floor, floorStep);
     addCableTube(group, [
       new THREE.Vector3(riser.x, riser.y, riser.z),
       new THREE.Vector3(trayPoint.x, trayPoint.y, trayPoint.z),
-    ], CABLING.selected.color, 0.08, 0.96, 54);
-    const pathLabel = link?.switchPort ? `${device.id} · ${link.switchPort}` : `${device.id} 線路`;
-    const label = createLabel(pathLabel, [devicePoint.x, devicePoint.y + 2.25, devicePoint.z], [5.8, 1, 1], '#7a3f00', 'rgba(255,244,218,0.92)');
+    ], CABLING.selected.color, 0.08, 0.96 * opacityScale, 54);
+    const pathLabel = cablePathLabel(device, link, faulted);
+    const labelWidth = Math.min(11.8, Math.max(6.4, pathLabel.length * 0.42));
+    const label = createLabel(pathLabel, [devicePoint.x, devicePoint.y + 2.25, devicePoint.z], [labelWidth, 1, 1], '#7a3f00', 'rgba(255,244,218,0.92)');
     label.renderOrder = 56;
     group.add(label);
   }
+}
+
+function cablePathLabel(device, link, faulted = false) {
+  if (!link) return faulted ? `${device.id} 線路異常` : `${device.id} 線路`;
+  const upstream = compactPair(link.switchId, link.switchPort);
+  const suffix = faulted ? ' · 異常' : '';
+  return upstream === '-' ? `${device.id} 線路${suffix}` : `${device.id} → 上聯 ${upstream}${suffix}`;
 }
 
 function getCableTraySide(building, floor, floorStep) {
@@ -2487,12 +3801,13 @@ function addLadderTray(group, tray, color, opacity, renderOrder) {
 }
 
 function addCableTube(group, points, color, radius = 0.05, opacity = 0.7, renderOrder = 20) {
+  const finalOpacity = clamp(opacity, 0.04, 1);
   const path = new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.08);
   const geometry = new THREE.TubeGeometry(path, Math.max(2, points.length * 8), radius, 8, false);
   const material = new THREE.MeshBasicMaterial({
     color,
-    transparent: opacity < 1,
-    opacity,
+    transparent: finalOpacity < 1,
+    opacity: finalOpacity,
     depthWrite: false,
     depthTest: false,
   });
@@ -2505,7 +3820,7 @@ function addCableTube(group, points, color, radius = 0.05, opacity = 0.7, render
 function createCableNode(color, opacity = 0.55, size = 0.74) {
   return new THREE.Mesh(
     new THREE.BoxGeometry(size, size * 0.68, size),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false }),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: clamp(opacity, 0.04, 1), depthTest: false, depthWrite: false }),
   );
 }
 
@@ -2513,11 +3828,25 @@ function midpoint(a, b) {
   return new THREE.Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
 }
 
-function addDevice(group, device, mode, selectedId, heightScale, interactive) {
+function addDevice(group, device, mode, selectedId, heightScale, interactive, sceneView = 'detail', activeBuildingId = null, selectedFloor = null, selectedRoom = null, floorOnly = false, opacityScale = 1) {
   const position = getDeviceRenderPosition(device, heightScale);
   const color = statusColor(device.status, mode, device);
   const selected = selectedId === device.id;
   const isFault = device.status === 'offline';
+  const isOverview = sceneView === 'overview';
+  const floorServiceSwitch = isFloorServiceSwitch(device);
+  const deviceFloor = parseDeviceFloor(device.floor);
+  const roomFilterActive = selectedRoom?.buildingId === device.building && selectedRoom.floor === selectedFloor;
+  const outsideSelectedFloor = selectedFloor && deviceFloor !== selectedFloor;
+  const outsideSelectedRoom = roomFilterActive && deviceFloor === selectedFloor && !deviceMatchesRoom(device, selectedRoom.room);
+  const inSelectedScope = activeBuildingId === device.building && selectedFloor && deviceFloor === selectedFloor && (!roomFilterActive || deviceMatchesRoom(device, selectedRoom.room));
+  const floorDimmed = sceneView === 'focus' && activeBuildingId === device.building && selectedFloor && (outsideSelectedFloor || outsideSelectedRoom) && !selected && !isFault;
+  const crowdedAp = isCrowdedAp(device);
+  const isHighLoad = device.type === 'ap' ? crowdedAp : Number(device.users || 0) >= 70 || Number(device.mbps || 0) >= 550;
+  const focusedAp = device.type === 'ap' && sceneView === 'focus' && activeBuildingId === device.building && (!selectedFloor || deviceFloor === selectedFloor) && !floorDimmed;
+  const markerScale = isOverview ? 0.58 : floorDimmed ? 0.72 : floorOnly && inSelectedScope ? 1.16 : focusedAp ? 1.12 : 1;
+  const dimOpacity = floorDimmed ? 0.18 : 1;
+  const deviceOpacity = selected || isFault ? 1 : clamp(opacityScale, 0.12, 1);
 
   const marker = new THREE.Group();
   marker.position.set(position.x, position.y, position.z);
@@ -2530,32 +3859,105 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive) {
   marker.add(stem);
 
   if (device.type === 'ap') {
-    const sphere = new THREE.Mesh(
-      new THREE.SphereGeometry(selected || isFault ? 0.86 : 0.68, 28, 20),
-      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: isFault ? 0.58 : 0.26, roughness: 0.45 }),
+    const puck = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55 * markerScale, 0.55 * markerScale, 0.16 * markerScale, 32),
+      new THREE.MeshStandardMaterial({
+        color: selected || isFault ? '#fff7ed' : '#eef8ef',
+        emissive: color,
+        emissiveIntensity: isFault ? 0.28 : selected || isHighLoad ? 0.18 : 0.08,
+        roughness: 0.42,
+      }),
     );
-    sphere.userData.entity = device;
-    interactive.push(sphere);
-    marker.add(sphere);
+    puck.userData.entity = device;
+    interactive.push(puck);
+    marker.add(puck);
 
-    [0.9, 1.45].forEach((radius, index) => {
+    const statusDot = new THREE.Mesh(
+      new THREE.SphereGeometry((selected || isFault ? 0.24 : 0.18) * markerScale, 18, 12),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: isFault ? 0.75 : 0.38, roughness: 0.35 }),
+    );
+    statusDot.position.y = 0.16 * markerScale;
+    statusDot.userData.entity = device;
+    interactive.push(statusDot);
+    marker.add(statusDot);
+
+    const glyph = createApWifiGlyph(isFault ? HEALTH.offline.color : '#0f766e', markerScale, selected || isFault || focusedAp);
+    glyph.position.y = 0.34 * markerScale;
+    glyph.traverse((child) => {
+      child.userData.entity = device;
+      interactive.push(child);
+    });
+    marker.add(glyph);
+
+    if (crowdedAp && !isFault && !floorDimmed) {
+      const crowd = createApUserCrowdGlyph(device.users, Math.max(1.25, markerScale * 1.2), selected);
+      const crowdPosition = roomOccupancyPosition(device, heightScale, position);
+      crowd.position.set(crowdPosition.x, crowdPosition.y, crowdPosition.z);
+      crowd.traverse((child) => {
+        child.renderOrder = selected ? 39 : 34;
+        child.userData.entity = device;
+        if (child.isMesh) {
+          const materials = Array.isArray(child.material) ? child.material : child.material ? [child.material] : [];
+          materials.forEach((material) => {
+            material.depthTest = false;
+            material.depthWrite = false;
+            if (deviceOpacity < 0.999) {
+              material.transparent = true;
+              material.opacity = (material.opacity ?? 1) * deviceOpacity;
+            }
+          });
+          interactive.push(child);
+        }
+      });
+      group.add(crowd);
+    }
+
+    const apNeedsRing = selected || isFault;
+    if (apNeedsRing && !floorDimmed) {
       const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(radius, 0.035, 10, 64),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: index === 0 ? 0.72 : 0.42 }),
+        new THREE.TorusGeometry(1.05 * markerScale, (isFault ? 0.07 : 0.045) * markerScale, 10, 56),
+        new THREE.MeshBasicMaterial({
+          color: isFault ? HEALTH.offline.color : loadColor(device.users, device.mbps, device.type),
+          transparent: true,
+          opacity: selected || isFault ? 0.86 : 0.5,
+        }),
       );
       ring.rotation.x = Math.PI / 2;
+      ring.position.y = -0.08;
       ring.userData.entity = device;
       interactive.push(ring);
       marker.add(ring);
-    });
+    }
   } else {
+    const switchColor = isFault
+      ? HEALTH.offline.color
+      : device.status === 'warning'
+        ? HEALTH.warning.color
+        : mode === 'cabling' && device.type === 'switch'
+          ? floorServiceSwitch ? CABLING.floorSwitch.color : CABLING.edgeSwitch.color
+          : color;
+    const boxScale = floorServiceSwitch ? 1.22 : 1;
     const box = new THREE.Mesh(
-      new THREE.BoxGeometry(selected || isFault ? 1.55 : 1.25, selected || isFault ? 1.05 : 0.85, selected || isFault ? 1.35 : 1.1),
-      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: isFault ? 0.48 : 0.16, roughness: 0.5 }),
+      new THREE.BoxGeometry(
+        (selected || isFault ? 1.55 : 1.25) * markerScale * boxScale,
+        (selected || isFault ? 1.05 : 0.85) * markerScale * boxScale,
+        (selected || isFault ? 1.35 : 1.1) * markerScale * boxScale,
+      ),
+      new THREE.MeshStandardMaterial({ color: switchColor, emissive: switchColor, emissiveIntensity: isFault ? 0.48 : floorServiceSwitch ? 0.28 : 0.16, roughness: 0.5 }),
     );
     box.userData.entity = device;
     interactive.push(box);
     marker.add(box);
+    if (floorServiceSwitch) {
+      const crown = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.46 * markerScale, 0.46 * markerScale, 0.14 * markerScale, 6),
+        new THREE.MeshBasicMaterial({ color: CABLING.floorSwitch.color, transparent: true, opacity: 0.9 }),
+      );
+      crown.position.y = (selected || isFault ? 0.66 : 0.54) * markerScale * boxScale;
+      crown.userData.entity = device;
+      interactive.push(crown);
+      marker.add(crown);
+    }
     for (let i = 0; i < 4; i += 1) {
       const port = new THREE.Mesh(
         new THREE.BoxGeometry(0.15, 0.08, 0.05),
@@ -2566,15 +3968,19 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive) {
     }
   }
 
-  const halo = new THREE.Mesh(
-    new THREE.TorusGeometry(selected || isFault ? 2.15 : 1.68, isFault ? 0.08 : 0.055, 12, 72),
-    new THREE.MeshBasicMaterial({ color: isFault ? HEALTH.offline.color : loadColor(device.users, device.mbps), transparent: true, opacity: selected || isFault ? 0.92 : 0.55 }),
-  );
-  halo.rotation.x = Math.PI / 2;
-  halo.position.y = -0.95;
-  halo.userData.entity = device;
-  interactive.push(halo);
-  marker.add(halo);
+  const showLoadHalo = device.type !== 'ap' && (selected || isFault || device.status === 'warning' || isHighLoad);
+  if (showLoadHalo) {
+    const haloRadius = selected || isFault ? 2.15 : 1.68;
+    const halo = new THREE.Mesh(
+      new THREE.TorusGeometry(haloRadius * markerScale, (isFault ? 0.08 : 0.055) * markerScale, 12, 72),
+      new THREE.MeshBasicMaterial({ color: isFault ? HEALTH.offline.color : loadColor(device.users, device.mbps), transparent: true, opacity: isOverview && !selected && !isFault ? 0.28 : selected || isFault ? 0.92 : 0.55 }),
+    );
+    halo.rotation.x = Math.PI / 2;
+    halo.position.y = -0.95;
+    halo.userData.entity = device;
+    interactive.push(halo);
+    marker.add(halo);
+  }
 
   if (isFault) {
     const alarm = new THREE.Mesh(
@@ -2587,11 +3993,16 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive) {
     marker.add(alarm);
   }
 
-  const labelText = isFault ? `${device.id} 故障` : `${device.id} · ${device.floor}`;
-  const label = createLabel(labelText, [0, 1.35, 0], [isFault ? 6.2 : 5.2, 1.15, 1], isFault ? '#7f1d1d' : '#17252a', isFault ? 'rgba(255,230,230,0.9)' : 'rgba(255,255,255,0.76)');
-  label.userData.entity = device;
-  interactive.push(label);
-  marker.add(label);
+  const showLabel = shouldShowDeviceLabel(device, sceneView, activeBuildingId, selected, isFault, floorDimmed);
+  if (showLabel) {
+    const labelText = isFault ? `${deviceTypePrefix(device)}｜${device.id} 故障` : `${deviceTypePrefix(device)}｜${device.id}`;
+    const labelWidth = Math.min(8.8, Math.max(isFault ? 6.8 : 5.6, labelText.length * 0.48));
+    const labelTone = deviceLabelTone(device, isFault);
+    const label = createLabel(labelText, [0, 1.35, 0], [labelWidth, 1.15, 1], labelTone.color, labelTone.bg);
+    label.userData.entity = device;
+    interactive.push(label);
+    marker.add(label);
+  }
 
   marker.traverse((child) => {
     child.renderOrder = isFault ? 36 : 30;
@@ -2599,6 +4010,11 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive) {
     materials.forEach((material) => {
       material.depthTest = false;
       material.depthWrite = false;
+      const opacityFactor = dimOpacity * deviceOpacity;
+      if (opacityFactor < 0.999) {
+        material.transparent = true;
+        material.opacity = (material.opacity ?? 1) * opacityFactor;
+      }
     });
   });
 
@@ -2608,7 +4024,7 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive) {
         new THREE.Vector3(device.x, position.y - 0.95, device.z),
         new THREE.Vector3(position.x, position.y - 0.95, position.z),
       ]),
-      new THREE.LineBasicMaterial({ color, transparent: true, opacity: isFault ? 0.88 : 0.45, depthTest: false, depthWrite: false }),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: (floorDimmed ? 0.12 : isFault ? 0.88 : 0.45) * deviceOpacity, depthTest: false, depthWrite: false }),
     );
     leader.renderOrder = isFault ? 34 : 24;
     group.add(leader);
@@ -2617,13 +4033,92 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive) {
   group.add(marker);
 }
 
+function createApWifiGlyph(color, scale = 1, strong = false) {
+  const group = new THREE.Group();
+  const opacity = strong ? 0.94 : 0.76;
+  const arcMaterial = new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false });
+  const radii = [0.3, 0.52, 0.74];
+  [0, Math.PI / 2].forEach((rotationY) => {
+    radii.forEach((radius, index) => {
+      const arc = new THREE.Mesh(
+        new THREE.TorusGeometry(radius * scale, (0.023 + index * 0.004) * scale, 6, 28, Math.PI),
+        arcMaterial,
+      );
+      arc.rotation.y = rotationY;
+      arc.position.y = (0.08 + index * 0.03) * scale;
+      group.add(arc);
+    });
+  });
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09 * scale, 12, 8),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: Math.min(1, opacity + 0.1), depthTest: false, depthWrite: false }),
+  );
+  dot.position.y = -0.06 * scale;
+  group.add(dot);
+  return group;
+}
+
+function createApUserCrowdGlyph(users, scale = 1, strong = false) {
+  const group = new THREE.Group();
+  const count = Math.min(18, Math.max(1, Math.ceil(Number(users || 0) / 10)));
+  const columns = Math.min(6, count);
+  const rows = Math.ceil(count / columns);
+  const spacing = 0.42 * scale;
+  const userColor = strong ? '#fb923c' : '#f59e0b';
+  const headMaterial = new THREE.MeshBasicMaterial({ color: '#fff7ed', transparent: true, opacity: 0.96, depthTest: false, depthWrite: false });
+  const bodyMaterial = new THREE.MeshBasicMaterial({ color: userColor, transparent: true, opacity: strong ? 0.96 : 0.86, depthTest: false, depthWrite: false });
+  const pad = new THREE.Mesh(
+    new THREE.CircleGeometry((0.68 + columns * 0.18) * scale, 32),
+    new THREE.MeshBasicMaterial({ color: '#fed7aa', transparent: true, opacity: strong ? 0.28 : 0.2, depthTest: false, depthWrite: false }),
+  );
+  pad.rotation.x = -Math.PI / 2;
+  pad.position.y = -0.14 * scale;
+  group.add(pad);
+
+  for (let index = 0; index < count; index += 1) {
+    const col = index % columns;
+    const row = Math.floor(index / columns);
+    const person = new THREE.Group();
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.1 * scale, 12, 10), headMaterial);
+    head.position.y = 0.3 * scale;
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.075 * scale, 0.09 * scale, 0.24 * scale, 10), bodyMaterial);
+    body.position.y = 0.1 * scale;
+    person.add(body, head);
+    person.position.set(
+      (col - (columns - 1) / 2) * spacing,
+      0,
+      (row - (rows - 1) / 2) * spacing,
+    );
+    group.add(person);
+  }
+
+  return group;
+}
+
+function deviceTypePrefix(device) {
+  if (device.type === 'ap') return 'AP';
+  if (device.type === 'switch') return isFloorServiceSwitch(device) ? '樓層SW' : '邊緣SW';
+  if (device.type === 'server') return 'SV';
+  return 'DEV';
+}
+
+function deviceLabelTone(device, isFault = false) {
+  if (isFault) return { color: '#7f1d1d', bg: 'rgba(255,230,230,0.92)' };
+  if (device.type === 'ap') return { color: '#0f3f35', bg: 'rgba(224,255,244,0.88)' };
+  if (device.type === 'switch' && isFloorServiceSwitch(device)) return { color: '#123d73', bg: 'rgba(218,235,255,0.94)' };
+  if (device.type === 'switch') return { color: '#155e75', bg: 'rgba(224,247,255,0.9)' };
+  if (device.type === 'server') return { color: '#3b245f', bg: 'rgba(244,238,255,0.9)' };
+  return { color: '#17252a', bg: 'rgba(255,255,255,0.76)' };
+}
+
 function createLabel(text, position, scale = [8, 2, 1], color = '#17252a', bg = 'rgba(255,255,255,0.7)') {
   const texture = createTextTexture(text, color, bg);
   const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }),
+    new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, depthTest: false, alphaTest: 0.02 }),
   );
   sprite.position.set(...position);
   sprite.scale.set(...scale);
+  sprite.userData.labelBaseScale = new THREE.Vector3(...scale);
   sprite.renderOrder = 8;
   return sprite;
 }
@@ -2631,22 +4126,42 @@ function createLabel(text, position, scale = [8, 2, 1], color = '#17252a', bg = 
 function createTextTexture(text, color, bg) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  const fontSize = 56;
-  ctx.font = `700 ${fontSize}px "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif`;
+  const fontSize = 62;
+  const paddingX = 36;
+  const logicalHeight = 108;
+  const textureScale = LABEL_TEXTURE_SCALE;
+  ctx.font = `800 ${fontSize}px "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif`;
   const metrics = ctx.measureText(text);
-  canvas.width = Math.ceil(metrics.width + 56);
-  canvas.height = 96;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const logicalWidth = Math.ceil(metrics.width + paddingX * 2);
+  canvas.width = Math.ceil(logicalWidth * textureScale);
+  canvas.height = Math.ceil(logicalHeight * textureScale);
+  canvas.style.width = `${logicalWidth}px`;
+  canvas.style.height = `${logicalHeight}px`;
+  ctx.scale(textureScale, textureScale);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.clearRect(0, 0, logicalWidth, logicalHeight);
   ctx.fillStyle = bg;
-  roundedRect(ctx, 0, 8, canvas.width, canvas.height - 16, 16);
+  roundedRect(ctx, 0.5, 9.5, logicalWidth - 1, logicalHeight - 19, 14);
   ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+  ctx.lineWidth = 2;
+  roundedRect(ctx, 1.5, 10.5, logicalWidth - 3, logicalHeight - 21, 13);
+  ctx.stroke();
   ctx.fillStyle = color;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = `700 ${fontSize}px "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif`;
-  ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+  ctx.font = `800 ${fontSize}px "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif`;
+  ctx.shadowColor = 'rgba(255,255,255,0.42)';
+  ctx.shadowBlur = 1.6;
+  ctx.shadowOffsetY = 0;
+  ctx.fillText(text, logicalWidth / 2, logicalHeight / 2 + 2);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
   return texture;
 }
 
@@ -2691,12 +4206,36 @@ function buildingStatus(buildingId) {
   return 'online';
 }
 
+function buildingDeviceSummary(buildingId) {
+  const counts = devices
+    .filter((device) => device.building === buildingId)
+    .reduce((acc, device) => {
+      acc[device.type] = (acc[device.type] || 0) + 1;
+      return acc;
+    }, {});
+  const parts = [
+    counts.ap ? `${counts.ap} AP` : '',
+    counts.switch ? `${counts.switch} 交換器` : '',
+    counts.server ? `${counts.server} 伺服器` : '',
+  ].filter(Boolean);
+  const known = (counts.ap || 0) + (counts.switch || 0) + (counts.server || 0);
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  if (total > known) parts.push(`${total - known} 其他`);
+  return parts.length ? parts.join(' · ') : '無設備';
+}
+
 function statusColor(status, mode, device) {
-  if (mode === 'traffic') return loadColor(device.users, device.mbps);
+  if (mode === 'traffic') return loadColor(device.users, device.mbps, device.type);
   return HEALTH[status]?.color || HEALTH.online.color;
 }
 
-function loadColor(users, mbps) {
+function loadColor(users, mbps, profile = 'default') {
+  if (profile === 'ap') {
+    if (users >= AP_LOAD_LIMITS.criticalUsers || mbps > AP_LOAD_LIMITS.criticalMbps) return TRAFFIC.critical.color;
+    if (users >= AP_LOAD_LIMITS.highUsers || mbps > AP_LOAD_LIMITS.highMbps) return TRAFFIC.high.color;
+    if (users >= AP_LOAD_LIMITS.mediumUsers || mbps > AP_LOAD_LIMITS.mediumMbps) return TRAFFIC.medium.color;
+    return TRAFFIC.low.color;
+  }
   if (users >= 110 || mbps >= 850) return TRAFFIC.critical.color;
   if (users >= 70 || mbps >= 550) return TRAFFIC.high.color;
   if (users >= 35 || mbps >= 260) return TRAFFIC.medium.color;
@@ -2716,16 +4255,16 @@ function buildingLevelSummary(building) {
 
 function entitySubtitle(entity) {
   if (!entity) return '';
-  if (entity.type === 'ap' || entity.type === 'switch') return `${HEALTH[entity.status].label} · ${entity.users} users · ${entity.mbps} Mbps`;
+  if (entity.type === 'ap' || entity.type === 'switch' || entity.type === 'server') return `${HEALTH[entity.status].label} · ${entity.users} users · ${entity.mbps} Mbps`;
   if (entity.signal) return `${SIGNAL[entity.signal].label} · ${entity.users} users · ${entity.mbps} Mbps`;
   if (entity.floors) return `${buildingLevelSummary(entity)} · ${buildingStatus(entity.id) === 'online' ? '設備正常' : HEALTH[buildingStatus(entity.id)].label}`;
   return '';
 }
 
-function DetailPanel({ entity, selectedFloor }) {
+function DetailPanel({ entity, selectedFloor, selectedRoom, selectedId, mode, onFloorSelect, onRoomSelect, onSelectDevice }) {
   if (!entity) return null;
 
-  const isDevice = entity.type === 'ap' || entity.type === 'switch';
+  const isDevice = entity.type === 'ap' || entity.type === 'switch' || entity.type === 'server';
   const isZone = Boolean(entity.signal);
   const color = isDevice ? statusColor(entity.status, 'health', entity) : isZone ? zoneColor(entity, 'signal') : '#9fb0b7';
   const deviceLink = isDevice ? getNetworkLinkForDevice(entity.id) : null;
@@ -2747,7 +4286,13 @@ function DetailPanel({ entity, selectedFloor }) {
             <Detail label="樓層" value={entity.floor} />
             <Detail label="用戶" value={entity.users} />
             <Detail label="流量" value={`${entity.mbps} Mbps`} />
-            <Detail label="頻道" value={entity.channel} wide />
+            <Detail label="頻道 / IP" value={entity.channel || entity.ip || '-'} wide />
+            {entity.ip ? <Detail label="管理 IP" value={entity.ip} /> : null}
+            {entity.model ? <Detail label="型號" value={entity.model} /> : null}
+            {entity.role ? <Detail label="角色" value={entity.role} wide /> : null}
+            {entity.room ? <Detail label="空間" value={entity.room} /> : null}
+            {entity.placement ? <Detail label="放置" value={placementLabel(entity.placement)} /> : null}
+            {entity.location ? <Detail label="位置" value={entity.location} wide /> : null}
           </div>
           <NetworkPathCard device={entity} link={deviceLink} />
         </>
@@ -2772,13 +4317,166 @@ function DetailPanel({ entity, selectedFloor }) {
             <Detail label="目前樓層" value={selectedFloor ? `${selectedFloor}F` : '-'} />
             <Detail label="設備狀態" value={HEALTH[buildingStatus(entity.id)].label} />
           </div>
-          <RoomStack building={entity} selectedFloor={selectedFloor} />
+          <FloorPicker building={entity} selectedFloor={selectedFloor} onFloorSelect={onFloorSelect} />
+          <RoomStack building={entity} selectedFloor={selectedFloor} selectedRoom={selectedRoom} onFloorSelect={onFloorSelect} onRoomSelect={onRoomSelect} />
+          <AreaDevicePanel building={entity} selectedFloor={selectedFloor} selectedRoom={selectedRoom} selectedId={selectedId} mode={mode} onSelectDevice={onSelectDevice} />
         </>
       ) : null}
     </section>
   );
 }
 
+
+function AreaDevicePanel({ building, selectedFloor, selectedRoom, selectedId, mode, onSelectDevice }) {
+  const floor = Math.max(1, Number(selectedFloor) || Number(building?.floors) || 1);
+  const room = selectedRoom?.buildingId === building.id && selectedRoom.floor === floor ? selectedRoom.room : null;
+  const scopedDevices = getAreaDevices(building.id, floor, room);
+  const title = room ? floor + 'F · ' + room : floor + 'F 全樓層';
+  const summary = areaDeviceSummary(scopedDevices);
+
+  return (
+    <section className="area-device-panel" aria-label="區域設備清單">
+      <div className="area-device-head">
+        <span>
+          <Cpu size={15} />
+          <strong>{title}</strong>
+        </span>
+        <small>{summary}</small>
+      </div>
+      {scopedDevices.length ? (
+        <div className="area-device-list">
+          {scopedDevices.map((device) => (
+            <DeviceRow
+              device={device}
+              key={device.id}
+              mode={mode}
+              selected={selectedId === device.id}
+              onSelect={onSelectDevice}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="area-device-empty">此範圍尚無設備資料。</p>
+      )}
+    </section>
+  );
+}
+
+function getAreaDevices(buildingId, floor, room = null) {
+  return devices
+    .filter((device) => device.building === buildingId)
+    .filter((device) => parseDeviceFloor(device.floor) === floor)
+    .filter((device) => !room || deviceMatchesRoom(device, room));
+}
+
+function areaDeviceSummary(deviceList = []) {
+  if (!deviceList.length) return '0 台';
+  const counts = deviceList.reduce((acc, device) => {
+    acc[device.type] = (acc[device.type] || 0) + 1;
+    if (device.status !== 'online') acc.alerts += 1;
+    return acc;
+  }, { ap: 0, switch: 0, server: 0, alerts: 0 });
+  const parts = [
+    counts.ap ? counts.ap + ' AP' : '',
+    counts.switch ? counts.switch + ' 交換器' : '',
+    counts.server ? counts.server + ' 伺服器' : '',
+  ].filter(Boolean);
+  if (counts.alerts) parts.push(counts.alerts + ' 告警');
+  return parts.length ? parts.join(' · ') : deviceList.length + ' 台';
+}
+
+function roomDeviceCount(buildingId, floor, room) {
+  return getAreaDevices(buildingId, floor, room).length;
+}
+
+function DeviceGroupList({ groups, mode, openState, selectedId, onToggle, onSelect }) {
+  return (
+    <div className="device-group-list">
+      {groups.map((group) => (
+        <div className={`device-group tone-${group.tone}`} key={group.id}>
+          <button className="device-group-head" type="button" onClick={() => onToggle(group.id)}>
+            <span className="device-group-title">
+              <DeviceGroupIcon id={group.id} />
+              <strong>{group.label}</strong>
+            </span>
+            <span className="device-group-meta">{deviceGroupMeta(group.devices)}</span>
+            <ChevronDown className={`device-group-chevron ${openState[group.id] ? 'is-open' : ''}`} size={15} />
+          </button>
+          {openState[group.id] ? (
+            <div className="device-list device-group-body">
+              {group.devices.map((device) => (
+                <DeviceRow
+                  device={device}
+                  key={device.id}
+                  mode={mode}
+                  selected={selectedId === device.id}
+                  onSelect={onSelect}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DeviceRow({ device, mode, selected, onSelect }) {
+  return (
+    <button
+      className={`device-row ${selected ? 'is-active' : ''} ${device.status !== 'online' ? 'has-alert' : ''}`}
+      type="button"
+      onClick={() => onSelect(device)}
+    >
+      <span className="device-icon" style={{ '--dot': statusColor(device.status, mode, device) }}>
+        <DeviceTypeIcon type={device.type} />
+      </span>
+      <span className="device-copy">
+        <strong>{device.name}</strong>
+        <small>{device.floor} · {device.room || device.location || '-'} · {device.id}</small>
+      </span>
+      <span className="device-load">{deviceListBadge(device)}</span>
+    </button>
+  );
+}
+
+function deviceListBadge(device) {
+  if (device.type === 'ap') return `${device.users || 0} 人`;
+  if (device.type === 'switch') return `${device.mbps || 0} Mbps`;
+  if (device.type === 'server') return HEALTH[device.status]?.label || device.status || '-';
+  return device.users ? `${device.users} 人` : HEALTH[device.status]?.label || '-';
+}
+function DeviceTypeIcon({ type }) {
+  if (type === 'ap') return <Wifi size={15} />;
+  if (type === 'switch') return <Cpu size={15} />;
+  if (type === 'server') return <Server size={15} />;
+  return <Activity size={15} />;
+}
+
+function DeviceGroupIcon({ id }) {
+  if (id === 'alerts') return <AlertTriangle size={15} />;
+  if (id === 'ap') return <Wifi size={15} />;
+  if (id === 'switch') return <Cpu size={15} />;
+  if (id === 'server') return <Server size={15} />;
+  return <Activity size={15} />;
+}
+
+function createDeviceGroups(deviceList = []) {
+  const alerts = deviceList.filter((device) => device.status !== 'online');
+  const groups = [
+    { id: 'alerts', label: '告警設備', tone: 'alert', devices: alerts },
+    { id: 'ap', label: 'AP', tone: 'ap', devices: deviceList.filter((device) => device.type === 'ap') },
+    { id: 'switch', label: '交換器', tone: 'switch', devices: deviceList.filter((device) => device.type === 'switch') },
+    { id: 'server', label: '伺服器', tone: 'server', devices: deviceList.filter((device) => device.type === 'server') },
+    { id: 'other', label: '其他設備', tone: 'other', devices: deviceList.filter((device) => !['ap', 'switch', 'server'].includes(device.type)) },
+  ];
+  return groups.filter((group) => group.devices.length > 0);
+}
+
+function deviceGroupMeta(deviceList = []) {
+  const alertCount = deviceList.filter((device) => device.status !== 'online').length;
+  return `${deviceList.length} 台${alertCount ? ` · ${alertCount} 告警` : ''}`;
+}
 function NetworkPathCard({ device, link }) {
   if (!link) {
     return <p className="network-path-empty">尚未匯入此設備的實體線路對照。</p>;
@@ -2818,23 +4516,75 @@ function mediaLabel(medium) {
   return medium === 'fiber' ? '光纖' : 'Cat6';
 }
 
+function placementLabel(placement) {
+  if (/room|center|inside|middle/i.test(String(placement))) return '教室/空間中心';
+  if (/corridor|edge|tray|wall/i.test(String(placement))) return '走廊/線槽邊';
+  return placement || '-';
+}
+
 function getNetworkLinkForDevice(deviceId) {
   return networkLinks.find((link) => link.deviceId === deviceId) || null;
 }
 
-function RoomStack({ building, selectedFloor }) {
+function FloorPicker({ building, selectedFloor, onFloorSelect }) {
+  const floors = Math.max(1, Number(building?.floors) || 1);
+  const floorList = Array.from({ length: floors }, (_, index) => floors - index);
+
+  return (
+    <div className="floor-picker" aria-label="選擇樓層">
+      {floorList.map((floor) => (
+        <button
+          className={`floor-pill ${selectedFloor === floor ? 'is-active' : ''}`}
+          type="button"
+          key={floor}
+          onClick={() => onFloorSelect?.(floor)}
+        >
+          {floor}F
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RoomStack({ building, selectedFloor, selectedRoom, onFloorSelect, onRoomSelect }) {
   if (!building.rooms) return null;
   return (
     <div className="room-stack">
       {Object.entries(building.rooms)
         .map(([floor, rooms]) => [Number(floor), rooms])
         .sort(([a], [b]) => b - a)
-        .map(([floor, rooms]) => (
-          <div className={`room-row ${selectedFloor === floor ? 'is-active' : ''}`} key={floor}>
-            <span>{floor}F</span>
-            <p>{rooms.join(' · ')}</p>
-          </div>
-        ))}
+        .map(([floor, rooms]) => {
+          const isActiveFloor = selectedFloor === floor;
+          const floorDevices = getAreaDevices(building.id, floor);
+          return (
+            <div className={'room-row ' + (isActiveFloor ? 'is-active' : '')} key={floor}>
+              <button className="room-floor-btn" type="button" onClick={() => onFloorSelect?.(floor)}>
+                <span>{floor}F</span>
+                <p>{rooms.join(' · ')}</p>
+                <small>{areaDeviceSummary(floorDevices)}</small>
+              </button>
+              {isActiveFloor ? (
+                <div className="room-chip-grid">
+                  {rooms.map((room) => {
+                    const isSelectedRoom = selectedRoom?.buildingId === building.id && selectedRoom.floor === floor && roomNamesMatch(selectedRoom.room, room);
+                    const count = roomDeviceCount(building.id, floor, room);
+                    return (
+                      <button
+                        className={'room-chip ' + (isSelectedRoom ? 'is-active' : '')}
+                        type="button"
+                        key={room}
+                        onClick={() => onRoomSelect?.(floor, room)}
+                      >
+                        <span>{room}</span>
+                        <small>{count} 台</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
     </div>
   );
 }

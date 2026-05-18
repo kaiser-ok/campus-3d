@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1300" viewBox="0 0 920 1300">
+  <defs>
+    <pattern id="grid" width="46" height="46" patternUnits="userSpaceOnUse">
+      <path d="M 46 0 L 0 0 0 46" fill="none" stroke="#d9e3dd" stroke-width="1"/>
+    </pattern>
+    <style>
+      text { font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif; font-weight: 800; fill: #21413e; text-anchor: middle; paint-order: stroke; stroke: rgba(255,255,255,0.76); stroke-width: 5px; stroke-linejoin: round; }
+      .small { font-size: 26px; fill: #576764; stroke-width: 4px; }
+      .road { fill: none; stroke: #d7ddd8; stroke-width: 42; stroke-linecap: round; stroke-linejoin: round; }
+      .road-line { fill: none; stroke: #aebdb6; stroke-width: 4; stroke-dasharray: 16 16; stroke-linecap: round; }
+      .court { fill: #dfe8dd; stroke: #9bb5a5; stroke-width: 3; }
+    </style>
+  </defs>
+  <rect width="920" height="1300" fill="#f6faf4"/>
+  <rect width="920" height="1300" fill="url(#grid)"/>
+  <path class="road" d="M 70 1080 L 220 990 L 420 1005 L 720 990 L 860 1068"/>
+  <path class="road" d="M 120 640 L 330 640 L 540 620 L 820 610"/>
+  <path class="road" d="M 130 230 L 350 230 L 590 240 L 820 235"/>
+  <path class="road-line" d="M 70 1080 L 220 990 L 420 1005 L 720 990 L 860 1068"/>
+  <path class="road-line" d="M 120 640 L 330 640 L 540 620 L 820 610"/>
+  <path class="road-line" d="M 130 230 L 350 230 L 590 240 L 820 235"/>
+  <rect class="court" x="365" y="360" width="190" height="150" rx="14"/>
+  <text class="small" x="460" y="448">操場 / 活動區</text>
+  <rect class="court" x="126" y="720" width="168" height="92" rx="12"/>
+  <text class="small" x="210" y="777">球場</text>
+    <g class="building">
+    <rect x="0.0" y="265.0" width="440.0" height="110.0" rx="7" fill="#b9c9c7"/>
+    <rect x="0.0" y="265.0" width="440.0" height="110.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="220.0" y="332.2" font-size="36.0">迎曦樓 A棟</text>
+  </g>
+  <g class="building">
+    <rect x="50.0" y="445.0" width="120.0" height="470.0" rx="7" fill="#c2ced2"/>
+    <rect x="50.0" y="445.0" width="120.0" height="470.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="110.0" y="687.5" font-size="22.0">德馨樓 B棟</text>
+  </g>
+  <g class="building">
+    <rect x="260.0" y="670.0" width="500.0" height="120.0" rx="7" fill="#b8c6cf"/>
+    <rect x="260.0" y="670.0" width="500.0" height="120.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="510.0" y="742.2" font-size="36.0">凌雲樓 C棟 / 資訊中心</text>
+  </g>
+  <g class="building">
+    <rect x="675.0" y="725.0" width="130.0" height="430.0" rx="7" fill="#c2cbd0"/>
+    <rect x="675.0" y="725.0" width="130.0" height="430.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="740.0" y="947.5" font-size="22.0">凱風樓 D棟</text>
+  </g>
+  <g class="building">
+    <rect x="675.0" y="180.0" width="130.0" height="380.0" rx="7" fill="#b7c8d1"/>
+    <rect x="675.0" y="180.0" width="130.0" height="380.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="740.0" y="377.5" font-size="22.0">向陽樓 E棟</text>
+  </g>
+  <g class="building">
+    <rect x="330.0" y="80.0" width="200.0" height="120.0" rx="7" fill="#d8ceb8"/>
+    <rect x="330.0" y="80.0" width="200.0" height="120.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="430.0" y="151.0" font-size="32.3">圖書館</text>
+  </g>
+  <g class="building">
+    <rect x="35.0" y="980.0" width="190.0" height="180.0" rx="7" fill="#c7ccd3"/>
+    <rect x="35.0" y="980.0" width="190.0" height="180.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="130.0" y="1080.4" font-size="30.6">活動中心</text>
+  </g>
+  <g class="building">
+    <rect x="360.0" y="1125.0" width="120.0" height="50.0" rx="7" fill="#d8ceb8"/>
+    <rect x="360.0" y="1125.0" width="120.0" height="50.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="420.0" y="1157.5" font-size="22.0">司令臺</text>
+  </g>
+  <g class="building">
+    <rect x="845.0" y="1160.0" width="70.0" height="60.0" rx="7" fill="#c7d6d2"/>
+    <rect x="845.0" y="1160.0" width="70.0" height="60.0" rx="7" fill="none" stroke="#2f6460" stroke-width="3"/>
+    <text x="880.0" y="1197.5" font-size="22.0">警衛室 / 校門</text>
+  </g>
+  <text x="460" y="74" font-size="42">新北市溪崑國中 校園示意底圖</text>
+  <text class="small" x="460" y="1248">校門 / 正門</text>
+  <text class="small" x="88" y="120">北側</text>
+  <text class="small" x="826" y="120">東側</text>
+</svg>
