@@ -1,0 +1,72 @@
+[
+  {
+    "id": "zone-fourth-north",
+    "type": "rect",
+    "label": "第四教學大樓北側",
+    "x": 31,
+    "z": -24,
+    "w": 17,
+    "d": 18,
+    "signal": "outage",
+    "traffic": "medium",
+    "users": 42,
+    "mbps": 318,
+    "note": "AP-4F-02 離線，2F 與 3F 北側教室覆蓋不足。"
+  },
+  {
+    "id": "zone-court-corridor",
+    "type": "circle",
+    "label": "排球場與川廊",
+    "x": 1,
+    "z": -13,
+    "rx": 24,
+    "rz": 31,
+    "signal": "fair",
+    "traffic": "critical",
+    "users": 128,
+    "mbps": 920,
+    "note": "戶外活動時用戶集中，建議新增戶外 AP 或調整頻道。"
+  },
+  {
+    "id": "zone-resource-west",
+    "type": "rect",
+    "label": "教學資源大樓西側",
+    "x": -34,
+    "z": -9,
+    "w": 18,
+    "d": 22,
+    "signal": "poor",
+    "traffic": "high",
+    "users": 78,
+    "mbps": 602,
+    "note": "牆體遮蔽與跨樓層漫遊造成訊號不穩。"
+  },
+  {
+    "id": "zone-admin",
+    "type": "rect",
+    "label": "行政大樓南側",
+    "x": 12,
+    "z": 52,
+    "w": 35,
+    "d": 15,
+    "signal": "good",
+    "traffic": "low",
+    "users": 19,
+    "mbps": 104,
+    "note": "目前訊號與容量都在正常範圍。"
+  },
+  {
+    "id": "zone-first-lab",
+    "type": "rect",
+    "label": "第一教學大樓實驗室",
+    "x": 39,
+    "z": 38,
+    "w": 15,
+    "d": 20,
+    "signal": "fair",
+    "traffic": "high",
+    "users": 86,
+    "mbps": 711,
+    "note": "實驗課時流量偏高，建議觀察尖峰 5GHz/6GHz 使用率。"
+  }
+]
