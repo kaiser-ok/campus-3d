@@ -10,6 +10,11 @@ const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || 'google/gemma-4-31B-it';
 const OPENROUTER_URL = process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1';
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-3.5-flash';
 
+// Floor-plan detection returns a per-floor room list per building, which can be
+// long. Give vision calls a generous output budget so the JSON is not truncated
+// mid-array (a low limit produces "Expected ']'" parse errors downstream).
+const VISION_MAX_TOKENS = 8192;
+
 // ── Gemma (OpenAI-compatible) ────────────────────────────────────────────────
 
 async function gemmaChat(messages, maxTokens = 2000) {
@@ -30,7 +35,7 @@ async function callGemma(imageBase64, mediaType, prompt) {
       { type: 'image_url', image_url: { url: `data:${mediaType};base64,${imageBase64}` } },
       { type: 'text', text: prompt },
     ],
-  }]);
+  }], VISION_MAX_TOKENS);
 }
 
 async function callGemmaText(prompt) {
@@ -64,7 +69,7 @@ async function callOpenrouter(imageBase64, mediaType, prompt) {
       { type: 'image_url', image_url: { url: `data:${mediaType};base64,${imageBase64}` } },
       { type: 'text', text: prompt },
     ],
-  }]);
+  }], VISION_MAX_TOKENS);
 }
 
 async function callOpenrouterText(prompt) {
@@ -93,7 +98,7 @@ async function callClaude(imageBase64, mediaType, prompt) {
       { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
       { type: 'text', text: prompt },
     ],
-  }]);
+  }], VISION_MAX_TOKENS);
 }
 
 async function callClaudeText(prompt) {

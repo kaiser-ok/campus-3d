@@ -145,10 +145,29 @@ function repairJsonLikeText(rawText = '') {
     .replace(/("|\]|\}|\d|true|false|null)\s+(?="(?:name|box|floors|basements|rooms|buildings)"\s*:)/g, '$1,');
 }
 
-function collectBalancedObjects(rawText = '') {
+function parseFallbackBuildingObject(rawObject = '') {
+  const boxMatch = rawObject.match(/"?box"?\s*:\s*\[([^\]]+)\]/i);
+  if (!boxMatch) return null;
+  const box = boxMatch[1].split(',').map((value) => Number(value.trim())).filter(Number.isFinite);
+  if (box.length !== 4) return null;
+  const nameMatch = rawObject.match(/"?name"?\s*:\s*"([^"]+)"/i) || rawObject.match(/"?name"?\s*:\s*([^,}\]]+)/i);
+  const floorsMatch = rawObject.match(/"?floors"?\s*:\s*(\d+)/i);
+  const basementsMatch = rawObject.match(/"?basements"?\s*:\s*(\d+)/i);
+  return {
+    name: nameMatch ? String(nameMatch[1]).trim().replace(/^['"]|['"]$/g, '') : '',
+    box,
+    floors: floorsMatch ? Number(floorsMatch[1]) : 4,
+    basements: basementsMatch ? Number(basementsMatch[1]) : 0,
+    rooms: {},
+  };
+}
+
+// Collect every balanced { } object, including nested ones. This recovers the
+// inner building objects even when the surrounding {"buildings":[ ... ]} wrapper
+// is truncated and never closes — the common cause of "Expected ']'" failures.
+function collectNestedBalancedObjects(rawText = '') {
   const objects = [];
-  let start = -1;
-  let depth = 0;
+  const starts = [];
   let inString = false;
   let escaped = false;
 
@@ -168,37 +187,21 @@ function collectBalancedObjects(rawText = '') {
     }
     if (inString) continue;
     if (char === '{') {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (char === '}') {
-      depth -= 1;
-      if (depth === 0 && start >= 0) objects.push(rawText.slice(start, i + 1));
+      starts.push(i);
+    } else if (char === '}' && starts.length) {
+      objects.push(rawText.slice(starts.pop(), i + 1));
     }
   }
 
   return objects;
 }
 
-function parseFallbackBuildingObject(rawObject = '') {
-  const boxMatch = rawObject.match(/"?box"?\s*:\s*\[([^\]]+)\]/i);
-  if (!boxMatch) return null;
-  const box = boxMatch[1].split(',').map((value) => Number(value.trim())).filter(Number.isFinite);
-  if (box.length !== 4) return null;
-  const nameMatch = rawObject.match(/"?name"?\s*:\s*"([^"]+)"/i) || rawObject.match(/"?name"?\s*:\s*([^,}\]]+)/i);
-  const floorsMatch = rawObject.match(/"?floors"?\s*:\s*(\d+)/i);
-  const basementsMatch = rawObject.match(/"?basements"?\s*:\s*(\d+)/i);
-  return {
-    name: nameMatch ? String(nameMatch[1]).trim().replace(/^['"]|['"]$/g, '') : '',
-    box,
-    floors: floorsMatch ? Number(floorsMatch[1]) : 4,
-    basements: basementsMatch ? Number(basementsMatch[1]) : 0,
-    rooms: {},
-  };
-}
-
 function salvageBuildingDetections(rawText = '') {
   const repaired = repairJsonLikeText(extractBalancedJsonObject(rawText) || rawText);
-  const objects = collectBalancedObjects(repaired).filter((objectText) => /"?box"?\s*:/.test(objectText));
+  // Prefer leaf building objects: contain a box, but are not the wrapper object
+  // (which carries the "buildings" key).
+  const objects = collectNestedBalancedObjects(repaired)
+    .filter((objectText) => /"?box"?\s*:/.test(objectText) && !/"?buildings"?\s*:/.test(objectText));
   return objects.map((objectText) => {
     try {
       return JSON.parse(repairJsonLikeText(objectText));
