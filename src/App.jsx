@@ -4,6 +4,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   Activity,
   AlertTriangle,
+  ArrowDownLeft,
+  ArrowDownRight,
+  ArrowUpLeft,
+  ArrowUpRight,
   Building2,
   Cable,
   Check,
@@ -33,6 +37,7 @@ import buildingsData from './data/buildings.json';
 import devicesData from './data/devices.json';
 import heatZonesData from './data/heatZones.json';
 import xikunSchool from './data/xikunSchool.js';
+import { createUe5Scene, downloadUe5Scene } from './ue5Scene.js';
 
 const DEFAULT_SCHOOL = {
   id: 'default',
@@ -841,9 +846,20 @@ function App() {
   const [showSchoolPicker, setShowSchoolPicker] = useState(false);
   const [networkImportError, setNetworkImportError] = useState('');
   const [networkImportMessage, setNetworkImportMessage] = useState('');
+  const [pixelStreamingUrl, setPixelStreamingUrl] = useState(() => (
+    localStorage.getItem('campus3d_pixel_streaming_url') || 'http://127.0.0.1/'
+  ));
 
   const currentSchool = schools.find((s) => s.id === currentSchoolId) ?? DEFAULT_SCHOOL;
   const currentIsBuiltIn = isBuiltInSchool(currentSchoolId);
+  const ue5Scene = useMemo(() => createUe5Scene({
+    ...currentSchool,
+    buildings,
+    devices,
+    heatZones,
+    networkLinks,
+  }), [currentSchool, sceneVersion]);
+  const ue5StaticSceneUrl = `/ue5/${currentSchool.id}-campus-scene.json`;
 
   function switchSchool(id) {
     const school = schools.find((s) => s.id === id);
@@ -1044,6 +1060,14 @@ function App() {
     }
   }
 
+  function handleDownloadUe5Scene() {
+    downloadUe5Scene(ue5Scene, `${currentSchool.id}-campus-scene.json`);
+  }
+
+  useEffect(() => {
+    try { localStorage.setItem('campus3d_pixel_streaming_url', pixelStreamingUrl); } catch {}
+  }, [pixelStreamingUrl]);
+
   function updateSceneOpacity(key, value) {
     const nextValue = clamp(Number(value) || DEFAULT_SCENE_OPACITY[key] || 1, 0.12, 1);
     setSceneOpacity((current) => ({ ...current, [key]: nextValue }));
@@ -1067,6 +1091,10 @@ function App() {
   const activeBuildingId = getActiveBuildingId(selectedEntity?.id);
   const activeSelectedRoom = selectedRoom?.buildingId === activeBuildingId ? selectedRoom : null;
 
+  function setViewPreset(name) {
+    setCameraPreset({ name, tick: Date.now() });
+  }
+
   function handleSelectEntity(entity) {
     setSelectedEntity(entity);
   }
@@ -1074,6 +1102,7 @@ function App() {
   function handleFloorSelect(floor) {
     setSelectedFloor(floor);
     setSelectedRoom(null);
+    if (selectedEntity?.floors) setHoveredEntity(selectedEntity);
   }
 
   function handleRoomSelect(floor, room) {
@@ -1103,13 +1132,13 @@ function App() {
     <main className="app-shell">
       <section className="viewport-panel">
         <div className="scene-toolbar" aria-label="3D 視角控制">
-          <button className="icon-button" type="button" title="重設視角" onClick={() => setCameraPreset({ name: 'home', tick: Date.now() })}>
+          <button className="icon-button" type="button" title="重設視角" onClick={() => setViewPreset('home')}>
             <RotateCcw size={18} />
           </button>
-          <button className="icon-button" type="button" title="俯視" onClick={() => setCameraPreset({ name: 'top', tick: Date.now() })}>
+          <button className="icon-button" type="button" title="俯視" onClick={() => setViewPreset('top')}>
             <MapIcon size={18} />
           </button>
-          <button className="icon-button" type="button" title="東側透視" onClick={() => setCameraPreset({ name: 'east', tick: Date.now() })}>
+          <button className="icon-button" type="button" title="東側透視" onClick={() => setViewPreset('east')}>
             <Maximize2 size={18} />
           </button>
           <button className={`icon-button ${showPlan ? 'is-active' : ''}`} type="button" title="底圖" onClick={() => setShowPlan((value) => !value)}>
@@ -1118,6 +1147,21 @@ function App() {
           <div className="toolbar-divider" />
           <button className={`icon-button ${showHints ? 'is-active' : ''}`} type="button" title="鍵盤快捷鍵" onClick={() => setShowHints((v) => !v)}>
             <Keyboard size={18} />
+          </button>
+        </div>
+
+        <div className="touch-view-pad" aria-label="3D 四角視角切換">
+          <button className="icon-button" type="button" title="西北視角" aria-label="西北視角" onClick={() => setViewPreset('northWest')}>
+            <ArrowUpLeft size={20} />
+          </button>
+          <button className="icon-button" type="button" title="東北視角" aria-label="東北視角" onClick={() => setViewPreset('northEast')}>
+            <ArrowUpRight size={20} />
+          </button>
+          <button className="icon-button" type="button" title="西南視角" aria-label="西南視角" onClick={() => setViewPreset('southWest')}>
+            <ArrowDownLeft size={20} />
+          </button>
+          <button className="icon-button" type="button" title="東南視角" aria-label="東南視角" onClick={() => setViewPreset('southEast')}>
+            <ArrowDownRight size={20} />
           </button>
         </div>
 
@@ -1405,6 +1449,40 @@ function App() {
           <p className="network-import-hint">自動化測試資料只在測試瀏覽器內；要在目前畫面看差異，可按「載入範例」。欄位可含 deviceId、type、name、building、floor、room、placement、x、z、switchId、switchPort、patchPanel、patchPort、vlan、cableId、medium、fiberCore、uplinkTo、status、note。placement 可用 room-center / corridor-edge。</p>
           {networkImportMessage && <p className="network-import-ok">{networkImportMessage}</p>}
           {networkImportError && <p className="network-import-error">{networkImportError}</p>}
+        </section>
+
+        <section className="panel-section ue5-poc-panel">
+          <div className="section-title">
+            <Server size={17} />
+            <h2>UE5 PoC</h2>
+          </div>
+          <div className="ue5-stat-grid">
+            <Detail label="建物" value={`${ue5Scene.summary.buildings}`} />
+            <Detail label="房間" value={`${ue5Scene.summary.rooms}`} />
+            <Detail label="設備" value={`${ue5Scene.summary.devices}`} />
+          </div>
+          <label className="ue5-url-field">
+            <span>Pixel Streaming URL</span>
+            <input
+              value={pixelStreamingUrl}
+              onChange={(event) => setPixelStreamingUrl(event.target.value)}
+              placeholder="http://127.0.0.1/"
+            />
+          </label>
+          <div className="ue5-action-row">
+            <a className="ue5-link-btn" href={ue5StaticSceneUrl} target="_blank" rel="noreferrer">
+              <FolderOpen size={15} />
+              <span>靜態 JSON</span>
+            </a>
+            <button className="ue5-link-btn" type="button" onClick={handleDownloadUe5Scene}>
+              <Download size={15} />
+              <span>下載目前 JSON</span>
+            </button>
+          </div>
+          <div className="ue5-stream-frame">
+            <iframe title="UE5 Pixel Streaming PoC" src={pixelStreamingUrl} />
+          </div>
+          <p className="ue5-note">UE5 端先讀取 JSON 建場景；Pixel Streaming 啟動後可直接嵌入此處。若尚未啟動 Signalling Server，iframe 會顯示連線失敗屬正常。</p>
         </section>
 
         <section className="panel-section">
@@ -2404,13 +2482,18 @@ function CampusScene({
       pointerRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointerRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycasterRef.current.setFromCamera(pointerRef.current, camera);
+      let isFloorHoveringSelectedBuilding = false;
       if (selectedEntity?.floors && !event.buttons) {
         const nextFloor = floorFromPointer(event, rect, selectedEntity, camera, heightScale, selectedFloor);
+        isFloorHoveringSelectedBuilding = Boolean(nextFloor);
         if (nextFloor && nextFloor !== selectedFloor) onFloorSelect(nextFloor);
       }
       const hits = raycasterRef.current.intersectObjects(interactiveRef.current, true);
       const hit = hits.find((item) => item.object.userData?.entity);
-      const entity = hit?.object.userData?.entity || null;
+      let entity = hit?.object.userData?.entity || null;
+      if (!shouldSelect && isFloorHoveringSelectedBuilding) {
+        entity = hoverEntityForSelectedBuilding(entity, selectedEntity);
+      }
       canvas.style.cursor = entity ? 'pointer' : 'grab';
       onHover(entity);
       if (shouldSelect && entity) onSelect(entity);
@@ -2504,6 +2587,7 @@ function CampusScene({
       if (floorHotkey) {
         event.preventDefault();
         onFloorSelect(floorHotkey);
+        onHover(selectedEntity);
         return;
       }
 
@@ -2535,7 +2619,7 @@ function CampusScene({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onFloorSelect, selectedEntity]);
+  }, [onFloorSelect, onHover, selectedEntity]);
 
   useEffect(() => {
     const WALK_KEYS = new Set(['i', 'j', 'k', 'l']);
@@ -2725,7 +2809,7 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
   if (isActive) addBuildingFocusFrame(group, building, h);
   if (!isFocusOther) {
     const nameLabel = createLabel(
-      `建物｜${building.name}`,
+      building.name,
       [building.x, h + 2.2, building.z],
       [Math.min(16, building.w + 4.5), isActive ? 2.5 : 2.0, 1],
       isActive ? '#1f3138' : '#4a6068',
@@ -3231,6 +3315,17 @@ function floorHotkeyFromEvent(event, selectedEntity) {
   const maxFloor = Math.max(1, Number(selectedEntity.floors) || 1);
   return requestedFloor >= 1 && requestedFloor <= maxFloor ? requestedFloor : null;
 }
+
+function hoverEntityForSelectedBuilding(entity, selectedBuilding) {
+  if (!selectedBuilding?.floors) return entity;
+  if (!entity) return selectedBuilding;
+  if (entity.id === selectedBuilding.id) return selectedBuilding;
+  const entityBuildingId = entity.building || entity.buildingId;
+  if (entityBuildingId) return entityBuildingId === selectedBuilding.id ? entity : selectedBuilding;
+  if (entity.floors) return selectedBuilding;
+  return entity;
+}
+
 function floorFromPointer(event, rect, building, camera, heightScale, currentFloor = null) {
   const floors = Math.max(1, Number(building?.floors) || 1);
   const height = Math.max(2.7, floors * BUILDING_FLOOR_HEIGHT * heightScale);
@@ -3357,6 +3452,22 @@ function getCampusCameraPreset(name = 'home') {
   if (name === 'east') {
     return {
       position: [centerX + span * 1.12, Math.max(46, span * 0.48), centerZ + depth * 0.08],
+      target: lookAt,
+    };
+  }
+
+  const cornerHeight = Math.max(58, Math.min(170, span * 0.72));
+  const cornerOffset = span * 0.92;
+  const cornerPresets = {
+    northEast: [centerX + cornerOffset, cornerHeight, centerZ - cornerOffset],
+    northWest: [centerX - cornerOffset, cornerHeight, centerZ - cornerOffset],
+    southEast: [centerX + cornerOffset, cornerHeight, centerZ + cornerOffset],
+    southWest: [centerX - cornerOffset, cornerHeight, centerZ + cornerOffset],
+  };
+
+  if (cornerPresets[name]) {
+    return {
+      position: cornerPresets[name],
       target: lookAt,
     };
   }

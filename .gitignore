@@ -3,3 +3,15 @@ dist/
 artifacts/
 .DS_Store
 *.log
+
+# Separate unrelated project (has its own git repo)
+aesthetic-sim-app/
+
+# UE5 experimental project and generated assets (intentionally not committed)
+ue5/
+public/ue5/
+public/reference/
+ue5-*.png
+
+# Local tooling / test artifacts
+.playwright-mcp/

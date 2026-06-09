@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 ## Project Overview
 
-**School WiFi 3D Campus Map** is a React + Three.js web app for visualizing school WiFi infrastructure on a 3D campus map. It supports:
+**School WiFi 3D Campus Map** is the project's core deliverable: take a school's 2D floor plan and turn it into an interactive 3D campus visualization. It is a React + Three.js web app and is the primary, maintained approach. (A parallel attempt to build a higher-fidelity digital twin in **Unreal Engine 5** lives under `ue5/`; it has not produced good results yet and is still being iterated on, but it is not the main path — see [UE5 Digital Twin Attempt](#ue5-digital-twin-attempt).)
+
+The web app supports:
 
 - 3D building/floor visualization over a 2D floor-plan image.
 - AP and switch status markers with health, traffic, and fault colors.
@@ -44,6 +46,17 @@ VERIFY_URL=http://127.0.0.1:5174/ node scripts/verify-visual.mjs
 - `vite.config.js`: Vite config plus local AI proxy endpoints.
 - `scripts/verify-visual.mjs`: Headless visual verification across desktop and mobile viewports.
 - `WORKLOG.md`: User-facing development log in Traditional Chinese.
+
+UE5 attempt (experimental, see below):
+
+- `src/ue5Scene.js`: Exports current school data (buildings, floors, rooms, devices, heat zones, network links) to UE5-oriented scene JSON, plus the in-app download helper. Also feeds the `UE5 PoC` panel in `src/App.jsx`.
+- `scripts/export-ue5-scene.mjs`: Static export of built-in schools to `public/ue5/*.json` (`npm run export:ue5`).
+- `src/data/xikunStyleProfile.js`: Reference-derived visual style profile (palette, facade rhythm, corridor/cable-tray hints, per-building visual roles) embedded into the UE5 scene export.
+- `public/ue5/`, `public/reference/`: Generated scene/style JSON and source photo reference.
+- `ue5/Campus3DPoc 5.7/`: Maintained UE5 project scaffold (`ACampusSceneLoaderActor`). `ue5/Campus3DPoc/` is the older original scaffold.
+- `docs/UE5_POC.md`: Full UE5 + Pixel Streaming PoC notes, coordinate contract, and acceptance criteria.
+
+Note: `aesthetic-sim-app/` is a separate, unrelated project (醫美視覺模擬器 / aesthetic-medicine visual simulator) with its own git repository. It is not part of the campus map — ignore it when working here, and do not edit or commit it from this project.
 
 ## Architecture
 
@@ -230,6 +243,23 @@ For network-link changes, also manually or programmatically verify:
 - `載入範例` creates visible sample devices.
 - Selecting the sample failed AP shows switch port, patch panel, cable ID, and red/offline state.
 - `實體線路` mode shows cable paths without hiding device markers.
+
+## UE5 Digital Twin Attempt
+
+Alongside the React + Three.js web app, the digital twin is also being prototyped in **Unreal Engine 5** (with Pixel Streaming to deliver it to browsers/tablets), aiming for higher visual fidelity. The idea is to keep React as the management UI and use UE5 as a high-fidelity renderer fed by exported campus JSON.
+
+**The UE5 results are not good yet and it is still being iterated on.** It is the secondary, experimental path — the React + Three.js web app remains the primary product. Only invest in the UE5 path when the user explicitly asks to work on it.
+
+What exists:
+
+- `npm run export:ue5` (`scripts/export-ue5-scene.mjs` + `src/ue5Scene.js`) emits UE5-oriented scene JSON to `public/ue5/`.
+- A `UE5 PoC` panel in `src/App.jsx` shows scene stats, a static JSON link, a download button for the current browser-edited school, and a Pixel Streaming URL + iframe.
+- A UE5 project scaffold under `ue5/Campus3DPoc 5.7/` with `ACampusSceneLoaderActor` that fetches the JSON and draws debug geometry.
+- A style profile (`src/data/xikunStyleProfile.js`) that hints materials and per-building visual roles.
+
+The UE5 project and its generated assets (`ue5/`, `public/ue5/`, `public/reference/`) are intentionally **not committed** to this repo for now. Full notes live in `docs/UE5_POC.md`.
+
+When working on the campus map, treat the React + Three.js web app as the source of truth; the UE5 export is a downstream consumer, not the main product.
 
 ## Current Limitations
 
