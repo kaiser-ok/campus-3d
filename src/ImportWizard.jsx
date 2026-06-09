@@ -769,6 +769,7 @@ function DrawStep({ imageUrl, imageBlob, boxes, setBoxes, aiBackend, setAiBacken
           <select value={aiBackend} onChange={e => setAiBackend(e.target.value)} className="wiz-backend-select">
             <option value="gemma">Gemma 4（本地）</option>
             <option value="claude">Claude API</option>
+            <option value="openrouter">OpenRouter（多模型）</option>
           </select>
           <button
             type="button"

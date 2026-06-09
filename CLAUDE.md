@@ -192,15 +192,20 @@ The right-side **實體線路資料** panel has:
 
 ## AI And Proxy Endpoints
 
-`vite.config.js` registers dev-server middleware:
+Two endpoints exist, served two ways depending on environment:
 
 - `POST /api/analyze-image`: vision analysis for floor-plan import.
 - `POST /api/chat`: text-only network analysis.
+
+In **local dev** (`npm run dev`), `vite.config.js` serves them as dev-server middleware. In **production on Vercel**, the same endpoints are Vercel serverless functions in `api/analyze-image.js` and `api/chat.js`. The Vite middleware only runs during `npm run dev`; it does not exist in the deployed build, which is why the serverless functions are required for the AI features to work on Vercel.
+
+Both paths share the backend-routing logic in `api/_llm.js` (files prefixed with `_` are not exposed as Vercel routes), so dev and production behave identically. Set the relevant API keys as Vercel project environment variables for production.
 
 Backends:
 
 - `gemma`: OpenAI-compatible local endpoint. Controlled by `LOCAL_LLM_URL` and `LOCAL_LLM_MODEL`.
 - `claude`: Anthropic API. Requires `ANTHROPIC_API_KEY`.
+- `openrouter`: OpenAI-compatible multi-model routing. Requires `OPENROUTER_API_KEY`; model via `OPENROUTER_MODEL` (default `google/gemini-2.5-flash`), endpoint via `OPENROUTER_URL`.
 
 Do not put secrets in source files. Use environment variables.
 

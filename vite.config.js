@@ -1,8 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-
-const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || 'http://192.168.30.46:8000';
-const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || 'google/gemma-4-31B-it';
+import { analyzeImage, chatText } from './api/_llm.js';
 
 async function readBody(req) {
   const chunks = [];
@@ -23,63 +21,9 @@ function respond(res, status, data) {
   res.end(body);
 }
 
-// ── Gemma (OpenAI-compatible) ────────────────────────────────────────────────
-
-async function gemmaChat(messages, maxTokens = 2000) {
-  const response = await fetch(`${LOCAL_LLM_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: LOCAL_LLM_MODEL, max_tokens: maxTokens, messages }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || `Gemma HTTP ${response.status}`);
-  return data.choices?.[0]?.message?.content ?? '';
-}
-
-async function callGemma(imageBase64, mediaType, prompt) {
-  return gemmaChat([{
-    role: 'user',
-    content: [
-      { type: 'image_url', image_url: { url: `data:${mediaType};base64,${imageBase64}` } },
-      { type: 'text', text: prompt },
-    ],
-  }]);
-}
-
-async function callGemmaText(prompt) {
-  return gemmaChat([{ role: 'user', content: prompt }], 1500);
-}
-
-// ── Claude (Anthropic) ───────────────────────────────────────────────────────
-
-async function claudeApi(messages, maxTokens = 2000) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY 未設定');
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-opus-4-5', max_tokens: maxTokens, messages }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message || `Claude HTTP ${response.status}`);
-  return data.content?.[0]?.text ?? '';
-}
-
-async function callClaude(imageBase64, mediaType, prompt) {
-  return claudeApi([{
-    role: 'user',
-    content: [
-      { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-      { type: 'text', text: prompt },
-    ],
-  }]);
-}
-
-async function callClaudeText(prompt) {
-  return claudeApi([{ role: 'user', content: prompt }], 1500);
-}
-
 // ── Vite plugin ──────────────────────────────────────────────────────────────
+// Backend routing lives in api/_llm.js so dev middleware and the Vercel
+// serverless functions (api/analyze-image.js, api/chat.js) stay in sync.
 
 function aiProxyPlugin() {
   return {
@@ -90,9 +34,7 @@ function aiProxyPlugin() {
         if (req.method !== 'POST') return respond(res, 405, {});
         try {
           const { backend = 'gemma', imageBase64, mediaType = 'image/jpeg', prompt } = await readBody(req);
-          const text = backend === 'claude'
-            ? await callClaude(imageBase64, mediaType, prompt)
-            : await callGemma(imageBase64, mediaType, prompt);
+          const text = await analyzeImage(backend, imageBase64, mediaType, prompt);
           respond(res, 200, { text });
         } catch (err) {
           console.error('[analyze-image]', err);
@@ -105,9 +47,7 @@ function aiProxyPlugin() {
         if (req.method !== 'POST') return respond(res, 405, {});
         try {
           const { backend = 'gemma', prompt } = await readBody(req);
-          const text = backend === 'claude'
-            ? await callClaudeText(prompt)
-            : await callGemmaText(prompt);
+          const text = await chatText(backend, prompt);
           respond(res, 200, { text });
         } catch (err) {
           console.error('[chat]', err);

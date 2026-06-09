@@ -4814,6 +4814,7 @@ ${zoneLines}
         <select value={backend} onChange={(e) => setBackend(e.target.value)}>
           <option value="gemma">Gemma 4（本地）</option>
           <option value="claude">Claude API</option>
+          <option value="openrouter">OpenRouter（多模型）</option>
         </select>
         <button type="button" className="ai-analyze-btn" onClick={analyze} disabled={loading}>
           {loading ? '分析中…' : '開始分析'}
