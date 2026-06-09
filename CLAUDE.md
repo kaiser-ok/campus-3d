@@ -205,7 +205,7 @@ Backends:
 
 - `gemma`: OpenAI-compatible local endpoint. Controlled by `LOCAL_LLM_URL` and `LOCAL_LLM_MODEL`.
 - `claude`: Anthropic API. Requires `ANTHROPIC_API_KEY`.
-- `openrouter`: OpenAI-compatible multi-model routing. Requires `OPENROUTER_API_KEY`; model via `OPENROUTER_MODEL` (default `google/gemini-2.5-flash`), endpoint via `OPENROUTER_URL`.
+- `openrouter`: OpenAI-compatible multi-model routing. Requires `OPENROUTER_API_KEY`; model via `OPENROUTER_MODEL` (default `google/gemini-3.5-flash`), endpoint via `OPENROUTER_URL`.
 
 Do not put secrets in source files. Use environment variables.
 

@@ -8,7 +8,7 @@ const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || 'http://192.168.30.46:8000';
 const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || 'google/gemma-4-31B-it';
 
 const OPENROUTER_URL = process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1';
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-3.5-flash';
 
 // ── Gemma (OpenAI-compatible) ────────────────────────────────────────────────
 
