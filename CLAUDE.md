@@ -138,11 +138,17 @@ Imported schools are stored in localStorage under `campus3d_schools`; images are
   status: "online" | "warning" | "offline",
   users,
   mbps,
-  channel
+  channel,
+  // Optional asset-management fields (drive the `asset` mode and the area asset CSV export):
+  assetTag, serialNumber, model, vendor,
+  purchaseDate, warrantyUntil,    // ISO-ish dates; `assetState()` derives 保固內/已過保/待汰換
+  fundingSource, custodian, lifecycleStatus
 }
 ```
 
 Devices inside buildings are rendered at floor height and projected slightly outside the nearest facade so they remain visible through the X-ray building shell.
+
+Buildings with offline/warning devices get a campus-wide alert beacon (pulsing pillar + count label) in every mode except `planning`; in `asset` mode the beacon counts 待汰換 devices instead.
 
 ### Heat Zone
 
@@ -216,6 +222,7 @@ Do not put secrets in source files. Use environment variables.
 - `用戶流量` (`traffic`): colors zones/devices by users and Mbps.
 - `樓層規劃` (`planning`): emphasizes floors, room labels, and building structure.
 - `實體線路` (`cabling`): shows corridor cable trays, vertical risers, inter-building fiber, Cat6 drops, core/MDF labels, and selected cable paths.
+- `資產檢視` (`asset`): colors devices by asset lifecycle state (保固內 / 已過保 / 待汰換或報廢 / 無資產資料) derived from `warrantyUntil`, `purchaseDate`, and `lifecycleStatus`; heat zones are dimmed.
 
 ## Styling Guidelines
 

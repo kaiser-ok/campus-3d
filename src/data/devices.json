@@ -10,7 +10,15 @@
     "status": "online",
     "users": 26,
     "mbps": 146,
-    "channel": "5GHz ch44"
+    "channel": "5GHz ch44",
+    "assetTag": "3104-010233-001",
+    "serialNumber": "TW23H08A1201",
+    "vendor": "Cisco",
+    "model": "C9105AXI",
+    "purchaseDate": "2023-08-15",
+    "warrantyUntil": "2026-08-15",
+    "fundingSource": "數位學習精進計畫",
+    "custodian": "資訊組"
   },
   {
     "id": "AP-RS-02",
@@ -23,7 +31,15 @@
     "status": "warning",
     "users": 58,
     "mbps": 388,
-    "channel": "5GHz ch149"
+    "channel": "5GHz ch149",
+    "assetTag": "3104-010233-002",
+    "serialNumber": "TW20I01B0339",
+    "vendor": "D-Link",
+    "model": "DAP-2680",
+    "purchaseDate": "2020-09-01",
+    "warrantyUntil": "2023-09-01",
+    "fundingSource": "前瞻基礎建設",
+    "custodian": "資訊組"
   },
   {
     "id": "AP-4F-02",
@@ -36,7 +52,16 @@
     "status": "offline",
     "users": 0,
     "mbps": 0,
-    "channel": "離線"
+    "channel": "離線",
+    "assetTag": "3104-008812-007",
+    "serialNumber": "TW18E05C0117",
+    "vendor": "D-Link",
+    "model": "DAP-2660",
+    "purchaseDate": "2018-05-20",
+    "warrantyUntil": "2021-05-20",
+    "fundingSource": "校務基金",
+    "custodian": "資訊組",
+    "lifecycleStatus": "待報廢"
   },
   {
     "id": "SW-4F-MDF",
@@ -49,7 +74,15 @@
     "status": "warning",
     "users": 118,
     "mbps": 760,
-    "channel": "uplink 78%"
+    "channel": "uplink 78%",
+    "assetTag": "3104-009450-003",
+    "serialNumber": "TW21B02D0450",
+    "vendor": "HPE Aruba",
+    "model": "2930F-48G",
+    "purchaseDate": "2021-02-10",
+    "warrantyUntil": "2024-02-10",
+    "fundingSource": "前瞻基礎建設",
+    "custodian": "資訊組"
   },
   {
     "id": "AP-GYM-01",
@@ -62,7 +95,15 @@
     "status": "online",
     "users": 102,
     "mbps": 870,
-    "channel": "5GHz ch100"
+    "channel": "5GHz ch100",
+    "assetTag": "3104-011872-001",
+    "serialNumber": "TW24K11E0028",
+    "vendor": "Cisco",
+    "model": "CW9163E",
+    "purchaseDate": "2024-11-05",
+    "warrantyUntil": "2027-11-05",
+    "fundingSource": "數位學習精進計畫",
+    "custodian": "體育組"
   },
   {
     "id": "AP-ADM-01",
@@ -75,7 +116,15 @@
     "status": "online",
     "users": 19,
     "mbps": 104,
-    "channel": "5GHz ch36"
+    "channel": "5GHz ch36",
+    "assetTag": "3104-012003-004",
+    "serialNumber": "TW25C03F0561",
+    "vendor": "Cisco",
+    "model": "C9105AXI",
+    "purchaseDate": "2025-03-12",
+    "warrantyUntil": "2028-03-12",
+    "fundingSource": "校務基金",
+    "custodian": "總務處"
   },
   {
     "id": "SW-MAIN-CORE",
@@ -88,7 +137,15 @@
     "status": "online",
     "users": 214,
     "mbps": 1240,
-    "channel": "core 42%"
+    "channel": "core 42%",
+    "assetTag": "3104-010520-001",
+    "serialNumber": "TW22F06G0094",
+    "vendor": "HPE Aruba",
+    "model": "5406R zl2",
+    "purchaseDate": "2022-06-30",
+    "warrantyUntil": "2027-06-30",
+    "fundingSource": "前瞻基礎建設",
+    "custodian": "資訊組"
   },
   {
     "id": "AP-1F-LAB",

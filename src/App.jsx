@@ -12,6 +12,7 @@ import {
   Cable,
   Check,
   ChevronDown,
+  ClipboardList,
   Cpu,
   Download,
   Eye,
@@ -350,6 +351,15 @@ function mergeDevicesFromNetworkRecords(existingDevices = [], records = [], buil
       mbps: Number(getRecordValue(record, ['mbps', 'traffic', 'throughput', '流量'])) || current?.mbps || 0,
       channel: getRecordValue(record, ['channel', '頻道']) || current?.channel || '-',
       location,
+      assetTag: getRecordValue(record, ['assetTag', 'asset_tag', 'asset', '財產編號', '財編']) || current?.assetTag || '',
+      serialNumber: getRecordValue(record, ['serialNumber', 'serial_number', 'serial', 'sn', '序號']) || current?.serialNumber || '',
+      model: getRecordValue(record, ['model', '型號']) || current?.model || '',
+      vendor: getRecordValue(record, ['vendor', 'manufacturer', 'brand', '廠牌', '廠商']) || current?.vendor || '',
+      purchaseDate: getRecordValue(record, ['purchaseDate', 'purchase_date', '採購日期', '採購日', '購置日期']) || current?.purchaseDate || '',
+      warrantyUntil: getRecordValue(record, ['warrantyUntil', 'warranty_until', 'warranty', '保固到期', '保固迄日', '保固']) || current?.warrantyUntil || '',
+      fundingSource: getRecordValue(record, ['fundingSource', 'funding_source', 'funding', '經費來源', '計畫名稱', '計畫']) || current?.fundingSource || '',
+      custodian: getRecordValue(record, ['custodian', 'keeper', '保管人']) || current?.custodian || '',
+      lifecycleStatus: getRecordValue(record, ['lifecycleStatus', 'lifecycle_status', 'lifecycle', '資產狀態', '使用狀態']) || current?.lifecycleStatus || '',
     };
 
     if (current) {
@@ -740,6 +750,7 @@ const MODES = [
   { id: 'traffic', label: '用戶流量', icon: Gauge },
   { id: 'planning', label: '樓層規劃', icon: Layers },
   { id: 'cabling', label: '實體線路', icon: Cable },
+  { id: 'asset', label: '資產檢視', icon: ClipboardList },
 ];
 
 const HEALTH = {
@@ -770,6 +781,44 @@ const AP_LOAD_LIMITS = {
   criticalUsers: 60,
   criticalMbps: 250,
 };
+
+const ASSET = {
+  ok: { label: '保固內', color: '#93e6c3', dark: '#047857' },
+  aging: { label: '已過保', color: '#f7d56f', dark: '#9a6b00' },
+  eol: { label: '待汰換 / 報廢', color: '#ff8a80', dark: '#b91c1c' },
+  unknown: { label: '無資產資料', color: '#aebfc7', dark: '#52616b' },
+};
+
+const ASSET_EOL_YEARS = 7;
+const ASSET_AGING_YEARS = 4;
+const MS_PER_YEAR = 31557600000;
+
+function parseAssetDate(value) {
+  if (!value) return null;
+  const date = new Date(String(value).trim().replace(/\//g, '-'));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function assetState(device) {
+  if (/報廢|汰換|淘汰|retired|eol/i.test(String(device?.lifecycleStatus || ''))) return 'eol';
+  const now = Date.now();
+  const purchase = parseAssetDate(device?.purchaseDate);
+  const ageYears = purchase ? (now - purchase.getTime()) / MS_PER_YEAR : null;
+  const warranty = parseAssetDate(device?.warrantyUntil);
+  if (warranty) {
+    if (warranty.getTime() >= now) return 'ok';
+    return ageYears != null && ageYears >= ASSET_EOL_YEARS ? 'eol' : 'aging';
+  }
+  if (ageYears != null) {
+    if (ageYears >= ASSET_EOL_YEARS) return 'eol';
+    return ageYears >= ASSET_AGING_YEARS ? 'aging' : 'ok';
+  }
+  return 'unknown';
+}
+
+function deviceHasAssetData(device) {
+  return Boolean(device?.assetTag || device?.serialNumber || device?.vendor || device?.purchaseDate || device?.warrantyUntil || device?.fundingSource || device?.custodian || device?.lifecycleStatus);
+}
 
 const CABLING = {
   tray: { label: '走廊線槽', color: '#7a8790' },
@@ -1082,6 +1131,40 @@ function App() {
     const highTraffic = heatZones.filter((zone) => zone.traffic === 'high' || zone.traffic === 'critical').length;
     return { online, warning, offline, issueZones, highTraffic };
   }, [sceneVersion]);
+  const problemItems = useMemo(() => {
+    const nameFor = (id) => buildings.find((b) => b.id === id)?.name || (id === 'outdoor' ? '戶外' : id || '-');
+    const items = [];
+    devices.forEach((device) => {
+      const place = `${nameFor(device.building)} · ${device.floor || '-'}`;
+      if (device.status === 'offline') {
+        items.push({ severity: device.type === 'ap' ? 1 : 0, tag: '故障', tone: 'offline', entity: device, title: device.name, place });
+      } else if (device.status === 'warning') {
+        items.push({ severity: 2, tag: '警告', tone: 'warning', entity: device, title: device.name, place });
+      } else if (isCrowdedAp(device)) {
+        items.push({ severity: 3, tag: '過載', tone: 'load', entity: device, title: device.name, place: `${place} · ${device.users} 人` });
+      }
+    });
+    heatZones.forEach((zone) => {
+      if (zone.signal === 'outage' || zone.signal === 'poor') {
+        items.push({ severity: 4, tag: SIGNAL[zone.signal].label, tone: 'signal', entity: zone, title: zone.label, place: '訊號熱區' });
+      } else if (zone.traffic === 'critical' || zone.traffic === 'high') {
+        items.push({ severity: 5, tag: `${TRAFFIC[zone.traffic].label}流量`, tone: 'load', entity: zone, title: zone.label, place: `${zone.users} users` });
+      }
+    });
+    return items.sort((a, b) => a.severity - b.severity);
+  }, [sceneVersion]);
+  const problemCycleRef = useRef({});
+  function cycleProblemSelection(kind) {
+    const pool = kind === 'offline'
+      ? devices.filter((device) => device.status === 'offline')
+      : kind === 'warning'
+        ? devices.filter((device) => device.status === 'warning')
+        : heatZones.filter((zone) => zone.signal === 'poor' || zone.signal === 'outage' || zone.traffic === 'high' || zone.traffic === 'critical');
+    if (!pool.length) return;
+    const index = ((problemCycleRef.current[kind] ?? -1) + 1) % pool.length;
+    problemCycleRef.current[kind] = index;
+    handleSelectEntity(pool[index]);
+  }
   const networkStats = useMemo(() => {
     const mapped = networkLinks.filter((link) => devices.some((device) => device.id === link.deviceId)).length;
     const fiber = networkLinks.filter((link) => link.medium === 'fiber').length;
@@ -1298,9 +1381,40 @@ function App() {
 
         <section className="metric-grid" aria-label="監控摘要">
           <Metric label="正常設備" value={metrics.online} tone="green" />
-          <Metric label="警告設備" value={metrics.warning} tone="amber" />
-          <Metric label="故障設備" value={metrics.offline} tone="red" />
-          <Metric label="問題區域" value={metrics.issueZones + metrics.highTraffic} tone="orange" />
+          <Metric label="警告設備" value={metrics.warning} tone="amber" onClick={metrics.warning ? () => cycleProblemSelection('warning') : undefined} />
+          <Metric label="故障設備" value={metrics.offline} tone="red" onClick={metrics.offline ? () => cycleProblemSelection('offline') : undefined} />
+          <Metric label="問題區域" value={metrics.issueZones + metrics.highTraffic} tone="orange" onClick={metrics.issueZones + metrics.highTraffic ? () => cycleProblemSelection('zones') : undefined} />
+        </section>
+
+        <section className="panel-section problem-panel" aria-label="待處理問題">
+          <div className="section-title">
+            <AlertTriangle size={17} />
+            <h2>待處理問題</h2>
+            <span className={`problem-count ${problemItems.length ? 'has-issues' : ''}`}>{problemItems.length}</span>
+          </div>
+          {problemItems.length ? (
+            <div className="problem-list">
+              {problemItems.slice(0, 12).map((item) => (
+                <button
+                  key={`${item.entity.id}-${item.tag}`}
+                  type="button"
+                  className={`problem-row tone-${item.tone} ${selectedEntity?.id === item.entity.id ? 'is-active' : ''}`}
+                  onClick={() => handleSelectEntity(item.entity)}
+                >
+                  <span className="problem-tag">{item.tag}</span>
+                  <span className="problem-copy">
+                    <strong>{item.title}</strong>
+                    <small>{item.place}</small>
+                  </span>
+                </button>
+              ))}
+              {problemItems.length > 12 ? (
+                <p className="problem-more">還有 {problemItems.length - 12} 項，可點上方指標卡逐一巡視。</p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="problem-empty">目前沒有待處理問題。</p>
+          )}
         </section>
 
         <section className="panel-section school-manage-panel">
@@ -1446,7 +1560,7 @@ function App() {
               <span>載入範例</span>
             </button>
           </div>
-          <p className="network-import-hint">自動化測試資料只在測試瀏覽器內；要在目前畫面看差異，可按「載入範例」。欄位可含 deviceId、type、name、building、floor、room、placement、x、z、switchId、switchPort、patchPanel、patchPort、vlan、cableId、medium、fiberCore、uplinkTo、status、note。placement 可用 room-center / corridor-edge。</p>
+          <p className="network-import-hint">自動化測試資料只在測試瀏覽器內；要在目前畫面看差異，可按「載入範例」。欄位可含 deviceId、type、name、building、floor、room、placement、x、z、switchId、switchPort、patchPanel、patchPort、vlan、cableId、medium、fiberCore、uplinkTo、status、note。placement 可用 room-center / corridor-edge。資產欄位可含 assetTag（財產編號）、serialNumber（序號）、model、vendor（廠牌）、purchaseDate（採購日期）、warrantyUntil（保固到期）、fundingSource（經費來源）、custodian（保管人）、lifecycleStatus（使用狀態）。</p>
           {networkImportMessage && <p className="network-import-ok">{networkImportMessage}</p>}
           {networkImportError && <p className="network-import-error">{networkImportError}</p>}
         </section>
@@ -2295,6 +2409,7 @@ function CampusScene({
   const walkKeysRef = useRef(new Set());
   const pointerDragRef = useRef({ button: null, startX: 0, startY: 0, moved: false, suppressClick: false });
   const labelScaleRef = useRef(labelScale);
+  const lastFlyRef = useRef({ entity: selectedEntity, heightScale });
   const [viewLevel, setViewLevel] = useState('overview');
   const viewLevelRef = useRef('overview');
 
@@ -2389,7 +2504,7 @@ function CampusScene({
         controls.target.add(delta);
       }
 
-      if (contentRef.current) rescaleSceneLabels(contentRef.current, camera, labelScaleRef.current);
+      if (contentRef.current) rescaleSceneLabels(contentRef.current, camera, labelScaleRef.current, performance.now());
       renderer.render(scene, camera);
       animationRef.current = requestAnimationFrame(animate);
     };
@@ -2451,12 +2566,19 @@ function CampusScene({
   useEffect(() => {
     const camera = cameraRef.current;
     const controls = controlsRef.current;
+    const lastFly = lastFlyRef.current;
+    const flyTriggerChanged = lastFly.entity !== selectedEntity || lastFly.heightScale !== heightScale;
+    lastFlyRef.current = { entity: selectedEntity, heightScale };
+    if (!flyTriggerChanged) return;
     if (!camera || !controls || !selectedEntity) return;
-    if (!selectedEntity.floors && selectedEntity.type !== 'ap' && selectedEntity.type !== 'switch' && selectedEntity.type !== 'server') return;
+    const isDevice = selectedEntity.type === 'ap' || selectedEntity.type === 'switch' || selectedEntity.type === 'server';
+    if (!selectedEntity.floors && !isDevice && !selectedEntity.signal) return;
 
     const target = selectedEntity.floors
       ? getBuildingFocus(selectedEntity, heightScale)
-      : getDeviceFocus(selectedEntity, heightScale);
+      : isDevice
+        ? getDeviceFocus(selectedEntity, heightScale)
+        : getZoneFocus(selectedEntity);
 
     flyCameraTo(camera, controls, target.position, target.lookAt);
   }, [selectedEntity, heightScale]);
@@ -2805,6 +2927,7 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
   const showRoomLabels = !isOverview && !isFocusOther && (isActive || (sceneView === 'detail' && mode === 'planning'));
   addRoomLabels(group, building, floorHeight * heightScale, showRoomLabels, interactive, highlightedFloor, highlightedRoom, isActive);
   if (isOverview) addBuildingOverviewBadge(group, building, h, status);
+  if (mode !== 'planning') addBuildingAlertBeacon(group, building, h, mode, heightScale, isFocusOther, interactive);
   if (isActive) addRoofDashboard(group, building, h, highlightedFloor, status);
   if (isActive) addBuildingFocusFrame(group, building, h);
   if (!isFocusOther) {
@@ -2838,6 +2961,68 @@ function addBuildingOverviewBadge(group, building, height, status) {
   label.renderOrder = 18;
   group.add(label);
 }
+function buildingAlertCounts(buildingId) {
+  const owned = devices.filter((device) => device.building === buildingId);
+  return {
+    offline: owned.filter((device) => device.status === 'offline').length,
+    warning: owned.filter((device) => device.status === 'warning').length,
+    eol: owned.filter((device) => assetState(device) === 'eol').length,
+  };
+}
+
+function campusMaxBuildingHeight(heightScale) {
+  return buildings.reduce((max, building) => (
+    Math.max(max, Math.max(2.7, (Number(building.floors) || 1) * BUILDING_FLOOR_HEIGHT * heightScale))
+  ), 2.7);
+}
+
+function addBuildingAlertBeacon(group, building, height, mode, heightScale, isFocusOther, interactive) {
+  const counts = buildingAlertCounts(building.id);
+  const isAssetMode = mode === 'asset';
+  const primary = isAssetMode ? counts.eol : counts.offline;
+  const secondary = isAssetMode ? 0 : counts.warning;
+  if (!primary && !secondary) return;
+
+  const color = primary ? HEALTH.offline.color : HEALTH.warning.color;
+  const topY = campusMaxBuildingHeight(heightScale) + 5.5;
+  const pillarHeight = Math.max(2.4, topY - height);
+  const dimFactor = isFocusOther ? 0.4 : 1;
+
+  const pillar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.16, 0.42, pillarHeight, 14, 1, true),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5 * dimFactor, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  pillar.position.set(building.x, height + pillarHeight / 2, building.z);
+  pillar.renderOrder = 26;
+  if (primary) pillar.userData.pulseRange = { min: 0.22 * dimFactor, max: 0.62 * dimFactor, phase: (building.x + building.z) * 0.35 };
+  pillar.userData.entity = building;
+  interactive.push(pillar);
+  group.add(pillar);
+
+  const tip = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.78),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.92 * dimFactor, depthWrite: false }),
+  );
+  tip.position.set(building.x, topY + 0.4, building.z);
+  tip.renderOrder = 27;
+  if (primary) tip.userData.pulseRange = { min: 0.55 * dimFactor, max: 0.95 * dimFactor, phase: (building.x + building.z) * 0.35 };
+  tip.userData.entity = building;
+  interactive.push(tip);
+  group.add(tip);
+
+  const labelText = isAssetMode
+    ? `${primary} 台待汰換`
+    : [primary ? `${primary} 故障` : '', secondary ? `${secondary} 警告` : ''].filter(Boolean).join(' · ');
+  const labelBg = primary ? 'rgba(255,235,235,0.94)' : 'rgba(255,248,228,0.94)';
+  const labelColor = primary ? '#7f1d1d' : '#7c5800';
+  const label = createLabel(labelText, [building.x, topY + 1.9, building.z], [Math.max(5.4, labelText.length * 0.62), 1.18, 1], labelColor, labelBg);
+  label.renderOrder = 40;
+  label.material.opacity = dimFactor;
+  label.userData.entity = building;
+  interactive.push(label);
+  group.add(label);
+}
+
 function addBuildingFocusFrame(group, building, height) {
   const frame = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(building.w + 1.2, height + 0.8, building.d + 1.2)),
@@ -3412,8 +3597,12 @@ function getViewLevel(distance) {
   return 'detail';
 }
 
-function rescaleSceneLabels(root, camera, userScale = 1) {
+function rescaleSceneLabels(root, camera, userScale = 1, timeMs = 0) {
   root.traverse((child) => {
+    const pulse = child.userData?.pulseRange;
+    if (pulse && child.material && timeMs) {
+      child.material.opacity = pulse.min + (pulse.max - pulse.min) * (0.5 + 0.5 * Math.sin(timeMs * 0.0042 + (pulse.phase || 0)));
+    }
     const baseScale = child.userData?.labelBaseScale;
     if (!baseScale) return;
     child.getWorldPosition(LABEL_WORLD_POSITION);
@@ -3517,6 +3706,17 @@ function getDeviceFocus(device, heightScale) {
   return {
     lookAt,
     position: new THREE.Vector3(position.x + distance * 0.55, position.y + 10, position.z + distance * 0.72),
+  };
+}
+
+function getZoneFocus(zone) {
+  const spanW = zone.type === 'circle' ? (Number(zone.rx) || 6) * 2 : Number(zone.w) || 10;
+  const spanD = zone.type === 'circle' ? (Number(zone.rz) || 6) * 2 : Number(zone.d) || 10;
+  const span = Math.max(spanW, spanD, 10);
+  const distance = Math.max(24, span * 1.5);
+  return {
+    lookAt: new THREE.Vector3(zone.x, 0.4, zone.z),
+    position: new THREE.Vector3(zone.x + distance * 0.5, Math.max(18, span * 1.1), zone.z + distance * 0.75),
   };
 }
 
@@ -3661,7 +3861,7 @@ function zoneOverlapsBuilding(zone, building) {
 
 function addHeatZone(group, zone, mode, selectedId, interactive, sceneView = 'campus') {
   const color = zoneColor(zone, mode);
-  const opacity = mode === 'planning' ? 0.22 : selectedId === zone.id ? 0.68 : 0.48;
+  const opacity = mode === 'planning' || mode === 'asset' ? 0.22 : selectedId === zone.id ? 0.68 : 0.48;
   const geometry = zone.type === 'circle' ? new THREE.CircleGeometry(1, 80) : new THREE.PlaneGeometry(zone.w, zone.d);
   const material = new THREE.MeshBasicMaterial({
     color,
@@ -4099,6 +4299,7 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive, sc
       new THREE.MeshBasicMaterial({ color: HEALTH.offline.color, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }),
     );
     alarm.position.y = 0.92;
+    alarm.userData.pulseRange = { min: 0.08, max: 0.3, phase: position.x * 0.4 };
     alarm.userData.entity = device;
     interactive.push(alarm);
     marker.add(alarm);
@@ -4337,6 +4538,7 @@ function buildingDeviceSummary(buildingId) {
 
 function statusColor(status, mode, device) {
   if (mode === 'traffic') return loadColor(device.users, device.mbps, device.type);
+  if (mode === 'asset') return ASSET[assetState(device)].color;
   return HEALTH[status]?.color || HEALTH.online.color;
 }
 
@@ -4356,7 +4558,7 @@ function loadColor(users, mbps, profile = 'default') {
 function zoneColor(zone, mode) {
   if (mode === 'traffic') return TRAFFIC[zone.traffic].color;
   if (mode === 'health' && zone.signal === 'outage') return HEALTH.offline.color;
-  if (mode === 'planning') return '#9fb0b7';
+  if (mode === 'planning' || mode === 'asset') return '#9fb0b7';
   return SIGNAL[zone.signal].color;
 }
 
@@ -4405,6 +4607,7 @@ function DetailPanel({ entity, selectedFloor, selectedRoom, selectedId, mode, on
             {entity.placement ? <Detail label="放置" value={placementLabel(entity.placement)} /> : null}
             {entity.location ? <Detail label="位置" value={entity.location} wide /> : null}
           </div>
+          <AssetInfoCard device={entity} />
           <NetworkPathCard device={entity} link={deviceLink} />
         </>
       ) : null}
@@ -4453,6 +4656,17 @@ function AreaDevicePanel({ building, selectedFloor, selectedRoom, selectedId, mo
           <strong>{title}</strong>
         </span>
         <small>{summary}</small>
+        {scopedDevices.length ? (
+          <button
+            type="button"
+            className="area-export-btn"
+            title="匯出此範圍的資產清單 CSV"
+            onClick={() => exportAreaAssetCsv(building, floor, room, scopedDevices)}
+          >
+            <Download size={13} />
+            <span>匯出清單</span>
+          </button>
+        ) : null}
       </div>
       {scopedDevices.length ? (
         <div className="area-device-list">
@@ -4471,6 +4685,30 @@ function AreaDevicePanel({ building, selectedFloor, selectedRoom, selectedId, mo
       )}
     </section>
   );
+}
+
+function exportAreaAssetCsv(building, floor, room, deviceList = []) {
+  const BOM = "\uFEFF";
+  const headers = ['財產編號', '設備ID', '名稱', '類型', '建築', '樓層', '空間', '廠牌', '型號', '序號', '採購日期', '保固到期', '資產狀態', '經費來源', '保管人', '連線狀態'];
+  const typeLabel = (type) => (type === 'ap' ? 'AP' : type === 'switch' ? '交換器' : type === 'server' ? '伺服器' : type || '-');
+  const escapeCell = (value) => {
+    const text = String(value ?? '');
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const rows = deviceList.map((device) => [
+    device.assetTag, device.id, device.name, typeLabel(device.type), building.name,
+    device.floor || `${floor}F`, device.room || device.location || '', device.vendor, device.model,
+    device.serialNumber, device.purchaseDate, device.warrantyUntil, ASSET[assetState(device)].label,
+    device.fundingSource, device.custodian, HEALTH[device.status]?.label || device.status || '',
+  ]);
+  const csv = BOM + [headers, ...rows].map((cells) => cells.map(escapeCell).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${building.name}-${floor}F${room ? `-${room}` : ''}-資產清單.csv`;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 function getAreaDevices(buildingId, floor, room = null) {
@@ -4588,6 +4826,30 @@ function deviceGroupMeta(deviceList = []) {
   const alertCount = deviceList.filter((device) => device.status !== 'online').length;
   return `${deviceList.length} 台${alertCount ? ` · ${alertCount} 告警` : ''}`;
 }
+function AssetInfoCard({ device }) {
+  if (!deviceHasAssetData(device)) return null;
+  const state = assetState(device);
+  return (
+    <div className="asset-card">
+      <div className="asset-card-title">
+        <ClipboardList size={15} />
+        <span>資產資料</span>
+        <b style={{ color: ASSET[state].dark }}>{ASSET[state].label}</b>
+      </div>
+      <div className="detail-grid">
+        <Detail label="財產編號" value={device.assetTag || '-'} />
+        <Detail label="序號" value={device.serialNumber || '-'} />
+        <Detail label="廠牌" value={device.vendor || '-'} />
+        <Detail label="採購日期" value={device.purchaseDate || '-'} />
+        <Detail label="保固到期" value={device.warrantyUntil || '-'} />
+        <Detail label="經費來源" value={device.fundingSource || '-'} />
+        <Detail label="保管人" value={device.custodian || '-'} />
+        <Detail label="使用狀態" value={device.lifecycleStatus || '使用中'} />
+      </div>
+    </div>
+  );
+}
+
 function NetworkPathCard({ device, link }) {
   if (!link) {
     return <p className="network-path-empty">尚未匯入此設備的實體線路對照。</p>;
@@ -4709,7 +4971,15 @@ function Detail({ label, value, wide = false }) {
   );
 }
 
-function Metric({ label, value, tone }) {
+function Metric({ label, value, tone, onClick }) {
+  if (onClick) {
+    return (
+      <button type="button" className={`metric-card tone-${tone} is-clickable`} title="點擊逐一巡視" onClick={onClick}>
+        <span>{label}</span>
+        <strong>{value}</strong>
+      </button>
+    );
+  }
   return (
     <div className={`metric-card tone-${tone}`}>
       <span>{label}</span>
@@ -4736,14 +5006,18 @@ function Legend({ mode }) {
       ? Object.values(HEALTH)
       : mode === 'cabling'
         ? Object.values(CABLING)
-        : Object.values(SIGNAL);
+        : mode === 'asset'
+          ? Object.values(ASSET)
+          : Object.values(SIGNAL);
   const title = mode === 'traffic'
     ? '流量顏色'
     : mode === 'health'
       ? '設備顏色'
       : mode === 'cabling'
         ? '線路圖例'
-        : '訊號顏色';
+        : mode === 'asset'
+          ? '資產狀態'
+          : '訊號顏色';
   return (
     <section className="legend-panel">
       <div className="section-title">
