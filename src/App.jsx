@@ -4139,6 +4139,263 @@ function midpoint(a, b) {
   return new THREE.Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
 }
 
+const SHARED_DEVICE_GEOMETRIES = new Map();
+const SHARED_DEVICE_TEXTURES = new Map();
+
+function sharedDeviceGeometry(key, factory) {
+  let geometry = SHARED_DEVICE_GEOMETRIES.get(key);
+  if (!geometry) {
+    geometry = factory();
+    geometry.userData.shared = true;
+    SHARED_DEVICE_GEOMETRIES.set(key, geometry);
+  }
+  return geometry;
+}
+
+function sharedDeviceTexture(key, factory) {
+  let texture = SHARED_DEVICE_TEXTURES.get(key);
+  if (!texture) {
+    texture = factory();
+    texture.userData.shared = true;
+    SHARED_DEVICE_TEXTURES.set(key, texture);
+  }
+  return texture;
+}
+
+const VENDOR_STYLES = {
+  cisco: { label: 'CISCO', accent: '#049fd9', apShape: 'square' },
+  aruba: { label: 'ARUBA', accent: '#ff8300', apShape: 'dome' },
+  ubiquiti: { label: 'UNIFI', accent: '#2f7df6', apShape: 'dome' },
+  juniper: { label: 'JUNIPER', accent: '#84b135', apShape: 'square' },
+  dlink: { label: 'D-LINK', accent: '#00a0d6', apShape: 'softsquare' },
+  tplink: { label: 'TP-LINK', accent: '#4acbd6', apShape: 'softsquare' },
+  zyxel: { label: 'ZYXEL', accent: '#3b4cc0', apShape: 'softsquare' },
+  generic: { label: 'LAN', accent: '#64748b', apShape: 'puck' },
+};
+
+function deviceVendorStyle(device) {
+  const text = `${device?.vendor || ''} ${device?.model || ''} ${device?.name || ''}`.toLowerCase();
+  if (/cisco|catalyst|meraki|aironet|cw9|c91\d/.test(text)) return VENDOR_STYLES.cisco;
+  if (/aruba|hpe/.test(text)) return VENDOR_STYLES.aruba;
+  if (/ubiquiti|unifi/.test(text)) return VENDOR_STYLES.ubiquiti;
+  if (/juniper|\bex\d{4}/.test(text)) return VENDOR_STYLES.juniper;
+  if (/d-?link|dap-|dgs-|dxs-|des-|ws6/.test(text)) return VENDOR_STYLES.dlink;
+  if (/tp-?link|omada|eap\d/.test(text)) return VENDOR_STYLES.tplink;
+  if (/zyxel|xgs|gs1200/.test(text)) return VENDOR_STYLES.zyxel;
+  return VENDOR_STYLES.generic;
+}
+
+function createRoundedPlateGeometry(width, depth, height, radius) {
+  const hw = width / 2 - radius;
+  const hd = depth / 2 - radius;
+  const shape = new THREE.Shape();
+  shape.absarc(hw, hd, radius, 0, Math.PI / 2);
+  shape.absarc(-hw, hd, radius, Math.PI / 2, Math.PI);
+  shape.absarc(-hw, -hd, radius, Math.PI, Math.PI * 1.5);
+  shape.absarc(hw, -hd, radius, Math.PI * 1.5, Math.PI * 2);
+  const bevel = 0.025;
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: height,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 2,
+    steps: 1,
+    curveSegments: 6,
+  });
+  geometry.rotateX(-Math.PI / 2);
+  geometry.translate(0, bevel, 0);
+  return geometry;
+}
+
+function createApBody(style, statusColorHex, emphasized, isFault) {
+  const group = new THREE.Group();
+  const shell = new THREE.MeshStandardMaterial({
+    color: emphasized ? '#fff7ed' : '#f3f7f5',
+    emissive: statusColorHex,
+    emissiveIntensity: isFault ? 0.3 : emphasized ? 0.18 : 0.07,
+    roughness: 0.36,
+    metalness: 0.04,
+  });
+  const led = new THREE.MeshStandardMaterial({
+    color: statusColorHex,
+    emissive: statusColorHex,
+    emissiveIntensity: isFault ? 0.85 : 0.5,
+    roughness: 0.3,
+  });
+  const accent = new THREE.MeshBasicMaterial({ color: style.accent, transparent: true, opacity: 0.85 });
+
+  const shadowRadius = style.apShape === 'dome' ? 0.62 : style.apShape === 'softsquare' ? 0.55 : 0.66;
+  const shadow = new THREE.Mesh(
+    sharedDeviceGeometry('ap-shadow', () => new THREE.CircleGeometry(1, 32)),
+    new THREE.MeshBasicMaterial({ color: '#22313a', transparent: true, opacity: 0.22, depthWrite: false }),
+  );
+  shadow.scale.setScalar(shadowRadius);
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.004;
+  group.add(shadow);
+
+  if (style.apShape === 'square') {
+    const plate = new THREE.Mesh(sharedDeviceGeometry('ap-square', () => createRoundedPlateGeometry(0.95, 0.95, 0.13, 0.2)), shell);
+    group.add(plate);
+    const ledBar = new THREE.Mesh(sharedDeviceGeometry('ap-square-led', () => new THREE.BoxGeometry(0.3, 0.045, 0.07)), led);
+    ledBar.position.set(0, 0.17, 0.33);
+    group.add(ledBar);
+    const trim = new THREE.Mesh(sharedDeviceGeometry('ap-square-trim', () => new THREE.BoxGeometry(0.56, 0.028, 0.05)), accent);
+    trim.position.set(0, 0.17, -0.3);
+    group.add(trim);
+  } else if (style.apShape === 'dome') {
+    const base = new THREE.Mesh(sharedDeviceGeometry('ap-dome-base', () => new THREE.CylinderGeometry(0.5, 0.54, 0.09, 36)), shell);
+    base.position.y = 0.045;
+    group.add(base);
+    const dome = new THREE.Mesh(sharedDeviceGeometry('ap-dome-top', () => {
+      const geometry = new THREE.SphereGeometry(0.46, 30, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+      geometry.scale(1, 0.62, 1);
+      return geometry;
+    }), shell);
+    dome.position.y = 0.09;
+    group.add(dome);
+    const ring = new THREE.Mesh(sharedDeviceGeometry('ap-dome-ring', () => new THREE.TorusGeometry(0.42, 0.035, 10, 48)), led);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.13;
+    group.add(ring);
+  } else if (style.apShape === 'softsquare') {
+    const plate = new THREE.Mesh(sharedDeviceGeometry('ap-soft', () => createRoundedPlateGeometry(0.8, 0.8, 0.11, 0.26)), shell);
+    group.add(plate);
+    const bump = new THREE.Mesh(sharedDeviceGeometry('ap-soft-bump', () => {
+      const geometry = new THREE.SphereGeometry(0.27, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+      geometry.scale(1, 0.5, 1);
+      return geometry;
+    }), shell);
+    bump.position.y = 0.13;
+    group.add(bump);
+    const dot = new THREE.Mesh(sharedDeviceGeometry('ap-soft-dot', () => new THREE.SphereGeometry(0.07, 14, 10)), led);
+    dot.position.set(0.22, 0.14, 0.22);
+    group.add(dot);
+    const trim = new THREE.Mesh(sharedDeviceGeometry('ap-soft-trim', () => new THREE.BoxGeometry(0.4, 0.026, 0.045)), accent);
+    trim.position.set(-0.08, 0.15, -0.24);
+    group.add(trim);
+  } else {
+    const puck = new THREE.Mesh(sharedDeviceGeometry('ap-puck', () => new THREE.CylinderGeometry(0.55, 0.55, 0.16, 32)), shell);
+    puck.position.y = 0.08;
+    group.add(puck);
+    const dot = new THREE.Mesh(sharedDeviceGeometry('ap-puck-dot', () => new THREE.SphereGeometry(0.18, 18, 12)), led);
+    dot.position.y = 0.24;
+    group.add(dot);
+  }
+  return group;
+}
+
+function createSwitchFaceTexture(style, portCount, ledHex, isFault) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 384;
+  canvas.height = 84;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#1b2127';
+  ctx.fillRect(0, 0, 384, 84);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(0, 0, 384, 4);
+  ctx.fillStyle = style.accent;
+  ctx.fillRect(0, 0, 10, 84);
+
+  const perRow = Math.ceil(portCount / 2);
+  const startX = 26;
+  const gapX = 22;
+  for (let index = 0; index < portCount; index += 1) {
+    const row = index < perRow ? 0 : 1;
+    const col = row === 0 ? index : index - perRow;
+    const x = startX + col * gapX;
+    const y = row === 0 ? 16 : 48;
+    ctx.fillStyle = '#0c1115';
+    ctx.fillRect(x, y + 7, 16, 12);
+    ctx.strokeStyle = '#39444c';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, y + 7, 16, 12);
+    const lit = !isFault && index % 4 !== 3;
+    ctx.fillStyle = lit ? ledHex : isFault ? '#5b2020' : '#36424c';
+    ctx.fillRect(x + 4, y, 8, 4);
+  }
+
+  ctx.fillStyle = '#9fb3bd';
+  ctx.font = '800 21px "Noto Sans TC", "PingFang TC", sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(style.label, 374, 44);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createSwitchBody(style, barColorHex, isFault, floorService) {
+  const group = new THREE.Group();
+  const units = floorService ? 2 : 1;
+  const unitHeight = 0.4;
+  const unitGap = 0.05;
+
+  const pedestal = new THREE.Mesh(
+    sharedDeviceGeometry('sw-pedestal', () => new THREE.BoxGeometry(1.34, 0.32, 0.82)),
+    new THREE.MeshStandardMaterial({ color: '#252c33', roughness: 0.52, metalness: 0.22 }),
+  );
+  pedestal.position.y = -0.16;
+  group.add(pedestal);
+  const pedestalTrim = new THREE.Mesh(
+    sharedDeviceGeometry('sw-pedestal-trim', () => new THREE.BoxGeometry(1.34, 0.045, 0.05)),
+    new THREE.MeshBasicMaterial({ color: style.accent, transparent: true, opacity: 0.75 }),
+  );
+  pedestalTrim.position.set(0, -0.03, 0.41);
+  group.add(pedestalTrim);
+  for (const side of [-1, 1]) {
+    const foot = new THREE.Mesh(
+      sharedDeviceGeometry('sw-foot', () => new THREE.BoxGeometry(0.18, 0.09, 0.72)),
+      new THREE.MeshStandardMaterial({ color: '#1b2127', roughness: 0.6 }),
+    );
+    foot.position.set(side * 0.52, -0.36, 0);
+    group.add(foot);
+  }
+  const portCount = floorService ? 24 : 10;
+  const faceTexture = sharedDeviceTexture(
+    `sw-face|${style.label}|${portCount}|${barColorHex}|${isFault ? 'fault' : 'ok'}`,
+    () => createSwitchFaceTexture(style, portCount, barColorHex, isFault),
+  );
+
+  for (let unit = 0; unit < units; unit += 1) {
+    const y = unit * (unitHeight + unitGap) + unitHeight / 2;
+    const chassis = new THREE.Mesh(
+      sharedDeviceGeometry('sw-chassis', () => new THREE.BoxGeometry(1.5, 0.4, 0.95)),
+      new THREE.MeshStandardMaterial({
+        color: isFault ? '#7f2222' : '#39414a',
+        roughness: 0.42,
+        metalness: 0.35,
+        emissive: isFault ? HEALTH.offline.color : '#000000',
+        emissiveIntensity: isFault ? 0.25 : 0,
+      }),
+    );
+    chassis.position.y = y;
+    group.add(chassis);
+
+    const face = new THREE.Mesh(
+      sharedDeviceGeometry('sw-faceplate', () => new THREE.PlaneGeometry(1.42, 0.3)),
+      new THREE.MeshBasicMaterial({ map: faceTexture }),
+    );
+    face.position.set(0, y, 0.477);
+    group.add(face);
+  }
+
+  const topY = units * (unitHeight + unitGap) - unitGap;
+  const bar = new THREE.Mesh(
+    sharedDeviceGeometry('sw-bar', () => new THREE.BoxGeometry(1.08, 0.055, 0.1)),
+    new THREE.MeshStandardMaterial({ color: barColorHex, emissive: barColorHex, emissiveIntensity: 0.8, roughness: 0.35 }),
+  );
+  bar.position.set(0, topY + 0.03, 0.36);
+  group.add(bar);
+  return group;
+}
+
 function addDevice(group, device, mode, selectedId, heightScale, interactive, sceneView = 'detail', activeBuildingId = null, selectedFloor = null, selectedRoom = null, floorOnly = false, opacityScale = 1) {
   const position = getDeviceRenderPosition(device, heightScale);
   const color = statusColor(device.status, mode, device);
@@ -4162,38 +4419,29 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive, sc
   const marker = new THREE.Group();
   marker.position.set(position.x, position.y, position.z);
 
-  const stem = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.08, 0.08, isFault ? 1.65 : 1.2, 14),
-    new THREE.MeshStandardMaterial({ color: isFault ? '#b91c1c' : '#4f5b5e', roughness: 0.6 }),
-  );
-  stem.position.y = isFault ? -0.96 : -0.75;
-  marker.add(stem);
+  if (device.type !== 'switch' || isFault) {
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.08, isFault ? 1.65 : 1.2, 14),
+      new THREE.MeshStandardMaterial({ color: isFault ? '#b91c1c' : '#4f5b5e', roughness: 0.6 }),
+    );
+    stem.position.y = isFault ? -0.96 : -0.75;
+    marker.add(stem);
+  }
+
+  const vendorStyle = deviceVendorStyle(device);
 
   if (device.type === 'ap') {
-    const puck = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.55 * markerScale, 0.55 * markerScale, 0.16 * markerScale, 32),
-      new THREE.MeshStandardMaterial({
-        color: selected || isFault ? '#fff7ed' : '#eef8ef',
-        emissive: color,
-        emissiveIntensity: isFault ? 0.28 : selected || isHighLoad ? 0.18 : 0.08,
-        roughness: 0.42,
-      }),
-    );
-    puck.userData.entity = device;
-    interactive.push(puck);
-    marker.add(puck);
-
-    const statusDot = new THREE.Mesh(
-      new THREE.SphereGeometry((selected || isFault ? 0.24 : 0.18) * markerScale, 18, 12),
-      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: isFault ? 0.75 : 0.38, roughness: 0.35 }),
-    );
-    statusDot.position.y = 0.16 * markerScale;
-    statusDot.userData.entity = device;
-    interactive.push(statusDot);
-    marker.add(statusDot);
+    const body = createApBody(vendorStyle, color, selected || isHighLoad, isFault);
+    body.scale.setScalar((selected || isFault ? 1.12 : 1) * markerScale);
+    body.position.y = -0.07;
+    body.traverse((child) => {
+      child.userData.entity = device;
+      if (child.isMesh) interactive.push(child);
+    });
+    marker.add(body);
 
     const glyph = createApWifiGlyph(isFault ? HEALTH.offline.color : '#0f766e', markerScale, selected || isFault || focusedAp);
-    glyph.position.y = 0.34 * markerScale;
+    glyph.position.y = (vendorStyle.apShape === 'dome' ? 0.5 : 0.4) * markerScale;
     glyph.traverse((child) => {
       child.userData.entity = device;
       interactive.push(child);
@@ -4247,35 +4495,27 @@ function addDevice(group, device, mode, selectedId, heightScale, interactive, sc
         : mode === 'cabling' && device.type === 'switch'
           ? floorServiceSwitch ? CABLING.floorSwitch.color : CABLING.edgeSwitch.color
           : color;
-    const boxScale = floorServiceSwitch ? 1.22 : 1;
-    const box = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        (selected || isFault ? 1.55 : 1.25) * markerScale * boxScale,
-        (selected || isFault ? 1.05 : 0.85) * markerScale * boxScale,
-        (selected || isFault ? 1.35 : 1.1) * markerScale * boxScale,
-      ),
-      new THREE.MeshStandardMaterial({ color: switchColor, emissive: switchColor, emissiveIntensity: isFault ? 0.48 : floorServiceSwitch ? 0.28 : 0.16, roughness: 0.5 }),
-    );
-    box.userData.entity = device;
-    interactive.push(box);
-    marker.add(box);
-    if (floorServiceSwitch) {
-      const crown = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.46 * markerScale, 0.46 * markerScale, 0.14 * markerScale, 6),
-        new THREE.MeshBasicMaterial({ color: CABLING.floorSwitch.color, transparent: true, opacity: 0.9 }),
+    if (device.type === 'switch') {
+      const body = createSwitchBody(vendorStyle, switchColor, isFault, floorServiceSwitch);
+      body.scale.setScalar((selected || isFault ? 1.2 : 1) * markerScale * (floorServiceSwitch ? 1.1 : 1));
+      body.position.y = floorServiceSwitch ? -0.45 : -0.22;
+      body.traverse((child) => {
+        child.userData.entity = device;
+        if (child.isMesh) interactive.push(child);
+      });
+      marker.add(body);
+    } else {
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          (selected || isFault ? 1.55 : 1.25) * markerScale,
+          (selected || isFault ? 1.05 : 0.85) * markerScale,
+          (selected || isFault ? 1.35 : 1.1) * markerScale,
+        ),
+        new THREE.MeshStandardMaterial({ color: switchColor, emissive: switchColor, emissiveIntensity: isFault ? 0.48 : 0.16, roughness: 0.5 }),
       );
-      crown.position.y = (selected || isFault ? 0.66 : 0.54) * markerScale * boxScale;
-      crown.userData.entity = device;
-      interactive.push(crown);
-      marker.add(crown);
-    }
-    for (let i = 0; i < 4; i += 1) {
-      const port = new THREE.Mesh(
-        new THREE.BoxGeometry(0.15, 0.08, 0.05),
-        new THREE.MeshBasicMaterial({ color: '#17252a' }),
-      );
-      port.position.set(-0.36 + i * 0.24, 0.08, -0.58);
-      marker.add(port);
+      box.userData.entity = device;
+      interactive.push(box);
+      marker.add(box);
     }
   }
 
@@ -4493,11 +4733,11 @@ function roundedRect(ctx, x, y, w, h, r) {
 
 function disposeObject(object) {
   object.traverse((child) => {
-    if (child.geometry) child.geometry.dispose();
+    if (child.geometry && !child.geometry.userData?.shared) child.geometry.dispose();
     if (child.material) {
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       materials.forEach((material) => {
-        if (material.map) material.map.dispose();
+        if (material.map && !material.map.userData?.shared) material.map.dispose();
         material.dispose();
       });
     }
