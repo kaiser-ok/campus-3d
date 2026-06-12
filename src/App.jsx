@@ -2923,7 +2923,7 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
   const floorHeight = BUILDING_FLOOR_HEIGHT;
   const h = Math.max(2.7, building.floors * floorHeight * heightScale);
   const color = mode === 'health' && status !== 'online' ? HEALTH[status].color : '#d8dee2';
-  const bodyOpacity = clamp((isFocusOther ? 0.16 : xray ? 0.42 : 1) * opacityScale, 0.06, 1);
+  const bodyOpacity = clamp((isFocusOther ? 0.16 : xray ? 0.48 : 1) * opacityScale, 0.06, 1);
   const roofOpacity = clamp((isFocusOther ? 0.22 : xray ? 0.58 : 1) * opacityScale, 0.08, 1);
   const material = new THREE.MeshStandardMaterial({
     color,
@@ -2932,8 +2932,8 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
     depthWrite: bodyOpacity === 1,
     roughness: 0.72,
     metalness: 0.03,
-    emissive: isActive ? '#6fcdb7' : '#000000',
-    emissiveIntensity: isActive ? 0.18 : 0,
+    emissive: isActive ? '#2f9c86' : '#000000',
+    emissiveIntensity: isActive ? 0.34 : 0,
   });
 
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(building.w, h, building.d), material);
@@ -2962,7 +2962,11 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
 
   const edges = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(building.w + 0.04, h + 0.04, building.d + 0.04)),
-    new THREE.LineBasicMaterial({ color: '#58646d', transparent: true, opacity: isFocusOther ? 0.1 : 0.42 }),
+    new THREE.LineBasicMaterial({
+      color: isActive ? '#0f6e5d' : '#58646d',
+      transparent: true,
+      opacity: isFocusOther ? 0.1 : isActive ? 0.92 : 0.42,
+    }),
   );
   edges.position.copy(mesh.position);
   group.add(edges);
