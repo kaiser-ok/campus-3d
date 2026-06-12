@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { N8AOPass } from 'n8ao';
 import {
   Activity,
   AlertTriangle,
@@ -2422,14 +2426,23 @@ function CampusScene({
     const canvas = canvasRef.current;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#f7f8f5');
-    scene.fog = new THREE.Fog('#f7f8f5', 115, 210);
+    scene.fog = new THREE.Fog('#f7f8f5', 150, 290);
 
     const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 400);
     camera.position.set(72, 80, 96);
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = false;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    scene.environment = envTexture;
+    scene.environmentIntensity = 0.3;
 
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
@@ -2450,13 +2463,35 @@ function CampusScene({
     controls.addEventListener('start', cancelFocusAnimation);
     canvas.addEventListener('contextmenu', preventCanvasContextMenu);
 
-    const hemisphere = new THREE.HemisphereLight('#ffffff', '#d5ddd8', 2.25);
+    const hemisphere = new THREE.HemisphereLight('#ffffff', '#d5ddd8', 0.4);
     scene.add(hemisphere);
 
-    const sun = new THREE.DirectionalLight('#ffffff', 1.15);
+    const sun = new THREE.DirectionalLight('#fff7ea', 1.25);
     sun.position.set(52, 86, 42);
-    sun.castShadow = false;
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 20;
+    sun.shadow.camera.far = 260;
+    sun.shadow.camera.left = -110;
+    sun.shadow.camera.right = 110;
+    sun.shadow.camera.top = 110;
+    sun.shadow.camera.bottom = -110;
+    sun.shadow.bias = -0.0002;
+    sun.shadow.normalBias = 0.35;
     scene.add(sun);
+
+    const composer = new EffectComposer(
+      renderer,
+      new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }),
+    );
+    const aoPass = new N8AOPass(scene, camera, 1, 1);
+    aoPass.configuration.gammaCorrection = false;
+    aoPass.configuration.halfRes = true;
+    aoPass.configuration.aoRadius = 4;
+    aoPass.configuration.distanceFalloff = 4;
+    aoPass.configuration.intensity = 3.2;
+    composer.addPass(aoPass);
+    composer.addPass(new OutputPass());
 
     sceneRef.current = scene;
     cameraRef.current = camera;
@@ -2468,6 +2503,8 @@ function CampusScene({
       const width = Math.max(rect.width, 320);
       const height = Math.max(rect.height, 320);
       renderer.setSize(width, height, false);
+      composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      composer.setSize(width, height);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
     };
@@ -2505,7 +2542,7 @@ function CampusScene({
       }
 
       if (contentRef.current) rescaleSceneLabels(contentRef.current, camera, labelScaleRef.current, performance.now());
-      renderer.render(scene, camera);
+      composer.render();
       animationRef.current = requestAnimationFrame(animate);
     };
     animate();
@@ -2516,6 +2553,8 @@ function CampusScene({
       controls.removeEventListener('start', cancelFocusAnimation);
       cancelAnimationFrame(animationRef.current);
       controls.dispose();
+      composer.dispose();
+      envTexture.dispose();
       renderer.dispose();
       disposeObject(scene);
     };
@@ -2768,7 +2807,7 @@ function addGround(group, showPlan, planUrl = '/school-plan.jpg', planOpacity = 
   );
   base.rotation.x = -Math.PI / 2;
   base.position.y = -0.08;
-  base.receiveShadow = false;
+  base.receiveShadow = true;
   group.add(base);
 
   const grid = new THREE.GridHelper(132, 22, '#9aa8a2', '#c9d1ca');
@@ -2800,11 +2839,19 @@ function addGround(group, showPlan, planUrl = '/school-plan.jpg', planOpacity = 
       texture.anisotropy = 8;
       const map = new THREE.Mesh(
         new THREE.PlaneGeometry(CAMPUS.width, CAMPUS.depth),
-        new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: clamp(planOpacity, 0.12, 1), depthWrite: false }),
+        new THREE.MeshStandardMaterial({
+          map: texture,
+          roughness: 0.94,
+          metalness: 0,
+          transparent: true,
+          opacity: clamp(planOpacity, 0.12, 1),
+          depthWrite: false,
+        }),
       );
       map.rotation.x = -Math.PI / 2;
       map.position.y = 0.015;
       map.renderOrder = 1;
+      map.receiveShadow = true;
       group.add(map);
     });
   }
@@ -2818,11 +2865,12 @@ function addCampusFeatures(group) {
 
   const track = new THREE.Mesh(
     new THREE.RingGeometry(10.5, 18.5, 96),
-    new THREE.MeshBasicMaterial({ color: '#d9e4dc', transparent: true, opacity: 0.72, side: THREE.DoubleSide }),
+    new THREE.MeshStandardMaterial({ color: '#d9e4dc', roughness: 0.92, transparent: true, opacity: 0.72, side: THREE.DoubleSide }),
   );
   track.rotation.x = -Math.PI / 2;
   track.scale.x = 0.78;
   track.position.set(0, 0.04, -13);
+  track.receiveShadow = true;
   group.add(track);
 
   const trackLine = new THREE.LineLoop(
@@ -2836,10 +2884,11 @@ function addCampusFeatures(group) {
 function addField(group, { x, z, w, d, color, label }) {
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(w, d),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.78, side: THREE.DoubleSide }),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.92, transparent: true, opacity: 0.78, side: THREE.DoubleSide }),
   );
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set(x, 0.045, z);
+  mesh.receiveShadow = true;
   group.add(mesh);
   group.add(createLabel(`場地｜${label}`, [x, 0.5, z], [8.8, 2.2, 1], '#31403c', 'rgba(245,255,250,0.7)'));
 }
@@ -2847,10 +2896,11 @@ function addField(group, { x, z, w, d, color, label }) {
 function addCourt(group, { x, z, w, d, label }) {
   const court = new THREE.Mesh(
     new THREE.PlaneGeometry(w, d),
-    new THREE.MeshBasicMaterial({ color: '#eaded9', transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
+    new THREE.MeshStandardMaterial({ color: '#eaded9', roughness: 0.92, transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
   );
   court.rotation.x = -Math.PI / 2;
   court.position.set(x, 0.05, z);
+  court.receiveShadow = true;
   group.add(court);
 
   const edge = new THREE.LineSegments(
@@ -2888,8 +2938,8 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
 
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(building.w, h, building.d), material);
   mesh.position.set(building.x, h / 2, building.z);
-  mesh.castShadow = false;
-  mesh.receiveShadow = false;
+  mesh.castShadow = bodyOpacity > 0.5;
+  mesh.receiveShadow = true;
   mesh.userData.entity = building;
   interactive.push(mesh);
   group.add(mesh);
@@ -2905,7 +2955,7 @@ function addBuilding(group, building, mode, heightScale, selectedId, activeBuild
     }),
   );
   roof.position.set(building.x, h + 0.1, building.z);
-  roof.castShadow = false;
+  roof.castShadow = roofOpacity > 0.5;
   roof.userData.entity = building;
   interactive.push(roof);
   group.add(roof);
@@ -3404,17 +3454,20 @@ function addRoomLabels(group, building, floorStep, showRooms, interactive, highl
 }
 
 function addFacadeWindows(group, building, floorStep) {
-  const windowMaterial = new THREE.MeshBasicMaterial({
-    color: '#eef6f1',
+  const windowMaterial = new THREE.MeshStandardMaterial({
+    color: '#cfe2ea',
+    roughness: 0.16,
+    metalness: 0.45,
     transparent: true,
-    opacity: 0.58,
+    opacity: 0.66,
     depthWrite: false,
     side: THREE.DoubleSide,
   });
-  const mullionMaterial = new THREE.MeshBasicMaterial({
+  const mullionMaterial = new THREE.MeshStandardMaterial({
     color: '#6f8087',
+    roughness: 0.55,
     transparent: true,
-    opacity: 0.35,
+    opacity: 0.4,
     depthWrite: false,
     side: THREE.DoubleSide,
   });
