@@ -797,6 +797,27 @@ const ASSET_EOL_YEARS = 7;
 const ASSET_AGING_YEARS = 4;
 const MS_PER_YEAR = 31557600000;
 
+function toneClass(prefix, key, fallback = 'default') {
+  return `${prefix} tone-${String(key || fallback).replace(/[^a-z0-9_-]/gi, '-').toLowerCase()}`;
+}
+
+function previewHandlePoints(box) {
+  const midX = box.x + box.width / 2;
+  const midY = box.y + box.height / 2;
+  const right = box.x + box.width;
+  const bottom = box.y + box.height;
+  return [
+    { handle: 'nw', x: box.x, y: box.y },
+    { handle: 'n', x: midX, y: box.y },
+    { handle: 'ne', x: right, y: box.y },
+    { handle: 'e', x: right, y: midY },
+    { handle: 'se', x: right, y: bottom },
+    { handle: 's', x: midX, y: bottom },
+    { handle: 'sw', x: box.x, y: bottom },
+    { handle: 'w', x: box.x, y: midY },
+  ];
+}
+
 function parseAssetDate(value) {
   if (!value) return null;
   const date = new Date(String(value).trim().replace(/\//g, '-'));
@@ -1350,7 +1371,7 @@ function App() {
             <button className="school-switch-btn" type="button" onClick={() => setShowSchoolPicker((v) => !v)}>
               <Building2 size={13} />
               <span>{currentSchool.name}</span>
-              <ChevronDown size={12} style={{ transform: showSchoolPicker ? 'rotate(180deg)' : 'none', transition: 'transform 180ms' }} />
+              <ChevronDown size={12} className={`chevron-icon ${showSchoolPicker ? 'is-open' : ''}`} />
             </button>
             <h1>WiFi 3D 監控圖</h1>
           </div>
@@ -1624,7 +1645,7 @@ function App() {
                   type="button"
                   onClick={() => handleSelectEntity(building)}
                 >
-                  <span className="building-swatch" style={{ background: HEALTH[status].color }} />
+                  <span className={toneClass('building-swatch', status)} />
                   <span className="building-copy">
                     <strong>{building.name}</strong>
                     <small>{buildingLevelSummary(building)} · {deviceSummary} · {HEALTH[status].label}</small>
@@ -1665,7 +1686,7 @@ function App() {
                 type="button"
                 onClick={() => handleSelectEntity(zone)}
               >
-                <span className="zone-swatch" style={{ background: zoneColor(zone, mode) }} />
+                <span className={toneClass('zone-swatch', zoneTone(zone, mode))} />
                 <span>
                   <strong>{zone.label}</strong>
                   <small>{SIGNAL[zone.signal].label} · {TRAFFIC[zone.traffic].label}流量</small>
@@ -1817,16 +1838,15 @@ function SchoolEditor({ school, onClose, onSave }) {
     onSave({ ...draft, buildings: buildingsForSave }, newPlanUrl);
   }
 
-  function previewStyle(building) {
-    const left = ((Number(building.x) - Number(building.w) / 2) / CAMPUS.width + 0.5) * 100;
-    const top = ((Number(building.z) - Number(building.d) / 2) / CAMPUS.depth + 0.5) * 100;
+  function previewBox(building) {
+    const x = ((Number(building.x) - Number(building.w) / 2) / CAMPUS.width + 0.5) * 100;
+    const y = ((Number(building.z) - Number(building.d) / 2) / CAMPUS.depth + 0.5) * 100;
     return {
-      left: `${left}%`,
-      top: `${top}%`,
-      width: `${(Number(building.w) / CAMPUS.width) * 100}%`,
-      height: `${(Number(building.d) / CAMPUS.depth) * 100}%`,
-      borderColor: building.accent || '#2bb8a5',
-      background: `${building.accent || '#2bb8a5'}4d`,
+      x,
+      y,
+      width: (Number(building.w) / CAMPUS.width) * 100,
+      height: (Number(building.d) / CAMPUS.depth) * 100,
+      accent: building.accent || '#2bb8a5',
     };
   }
 
@@ -1954,31 +1974,36 @@ function SchoolEditor({ school, onClose, onSave }) {
             >
               {draft.planUrl ? <img src={draft.planUrl} alt="目前學校底圖" draggable="false" /> : null}
               <div className="editor-map-grid" />
-              {draft.buildings.map((building) => {
-                const selected = building.id === selectedBuildingId;
-                return (
-                  <div
-                    key={building.id}
-                    className={`editor-building-box${selected ? ' is-selected' : ''}`}
-                    style={previewStyle(building)}
-                    onPointerDown={(event) => beginPreviewDrag(event, building, 'move')}
-                    onMouseDown={(event) => beginPreviewDrag(event, building, 'move')}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <strong>{building.name || '未命名建築'}</strong>
-                    <small>{building.floors}F · {building.w} x {building.d}</small>
-                    {selected && ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((handle) => (
-                      <span
-                        key={handle}
-                        className={`editor-resize-handle handle-${handle}`}
-                        onPointerDown={(event) => beginPreviewDrag(event, building, handle)}
-                        onMouseDown={(event) => beginPreviewDrag(event, building, handle)}
-                      />
-                    ))}
-                  </div>
-                );
-              })}
+              <svg className="editor-preview-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="建築位置預覽">
+                {draft.buildings.map((building) => {
+                  const selected = building.id === selectedBuildingId;
+                  const box = previewBox(building);
+                  const handles = selected ? previewHandlePoints(box) : [];
+                  return (
+                    <g
+                      key={building.id}
+                      className={`editor-building-svg${selected ? ' is-selected' : ''}`}
+                      onPointerDown={(event) => beginPreviewDrag(event, building, 'move')}
+                      onMouseDown={(event) => beginPreviewDrag(event, building, 'move')}
+                    >
+                      <rect x={box.x} y={box.y} width={box.width} height={box.height} fill={box.accent} fillOpacity="0.3" stroke={box.accent} />
+                      <text x={box.x + box.width / 2} y={box.y + box.height / 2 - 1} textAnchor="middle" dominantBaseline="middle">{building.name || '未命名建築'}</text>
+                      <text x={box.x + box.width / 2} y={box.y + box.height / 2 + 5} textAnchor="middle" dominantBaseline="middle" className="editor-building-svg-meta">{building.floors}F</text>
+                      {handles.map((point) => (
+                        <circle
+                          key={point.handle}
+                          className="editor-resize-svg-handle"
+                          cx={point.x}
+                          cy={point.y}
+                          r="1.6"
+                          onPointerDown={(event) => beginPreviewDrag(event, building, point.handle)}
+                          onMouseDown={(event) => beginPreviewDrag(event, building, point.handle)}
+                        />
+                      ))}
+                    </g>
+                  );
+                })}
+              </svg>
             </div>
             {selectedBuilding && (
               <p className="editor-preview-selected">目前選取：<strong>{selectedBuilding.name}</strong>，X {selectedBuilding.x} / Z {selectedBuilding.z} / W {selectedBuilding.w} / D {selectedBuilding.d}</p>
@@ -2635,6 +2660,10 @@ function CampusScene({
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    const setCursor = (cursor) => {
+      canvas.classList.toggle('is-picking', cursor === 'pointer');
+      canvas.classList.toggle('is-grabbing', cursor === 'grabbing');
+    };
 
     const pick = (event, shouldSelect = false) => {
       const camera = cameraRef.current;
@@ -2655,7 +2684,7 @@ function CampusScene({
       if (!shouldSelect && isFloorHoveringSelectedBuilding) {
         entity = hoverEntityForSelectedBuilding(entity, selectedEntity);
       }
-      canvas.style.cursor = entity ? 'pointer' : 'grab';
+      setCursor(entity ? 'pointer' : 'grab');
       onHover(entity);
       if (shouldSelect && entity) onSelect(entity);
       return entity;
@@ -2670,7 +2699,7 @@ function CampusScene({
         moved: false,
         suppressClick: pointerDragRef.current.suppressClick,
       };
-      if (event.button === 2) canvas.style.cursor = 'grabbing';
+      if (event.button === 2) setCursor('grabbing');
     };
 
     const handleMove = (event) => {
@@ -2689,10 +2718,10 @@ function CampusScene({
         drag.suppressClick = drag.moved || event.button !== 0;
         drag.button = null;
       }
-      canvas.style.cursor = 'grab';
+      setCursor('grab');
     };
     const handleLeave = () => {
-      canvas.style.cursor = 'grab';
+      setCursor('grab');
       onHover(null);
     };
     const handleClick = (event) => {
@@ -4744,8 +4773,6 @@ function createTextTexture(text, color, bg) {
   const logicalWidth = Math.ceil(metrics.width + paddingX * 2);
   canvas.width = Math.ceil(logicalWidth * textureScale);
   canvas.height = Math.ceil(logicalHeight * textureScale);
-  canvas.style.width = `${logicalWidth}px`;
-  canvas.style.height = `${logicalHeight}px`;
   ctx.scale(textureScale, textureScale);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
@@ -4859,6 +4886,37 @@ function zoneColor(zone, mode) {
   return SIGNAL[zone.signal].color;
 }
 
+function zoneTone(zone, mode) {
+  if (mode === 'traffic') return zone.traffic || 'low';
+  if (mode === 'health' && zone.signal === 'outage') return 'offline';
+  if (mode === 'planning' || mode === 'asset') return 'neutral';
+  return zone.signal || 'good';
+}
+
+function deviceTone(device, mode) {
+  if (mode === 'traffic') {
+    const color = loadColor(device.users, device.mbps, device.type);
+    if (color === TRAFFIC.critical.color) return 'critical';
+    if (color === TRAFFIC.high.color) return 'high';
+    if (color === TRAFFIC.medium.color) return 'medium';
+    return 'low';
+  }
+  if (mode === 'asset') return assetState(device);
+  return device.status || 'online';
+}
+
+function legendTone(label, mode) {
+  const source = mode === 'traffic' ? TRAFFIC
+    : mode === 'health' ? HEALTH
+      : mode === 'asset' ? ASSET
+        : mode === 'signal' || mode === 'planning' ? SIGNAL
+          : {};
+  const entry = Object.entries(source).find(([, value]) => value.label === label);
+  if (entry) return entry[0];
+  if (mode === 'cabling') return /光纖/.test(label) ? 'fiber' : 'cat6';
+  return 'neutral';
+}
+
 function buildingLevelSummary(building) {
   return building.basements ? `B1 + ${building.floors}F` : `${building.floors}F`;
 }
@@ -4876,13 +4934,13 @@ function DetailPanel({ entity, selectedFloor, selectedRoom, selectedId, mode, on
 
   const isDevice = entity.type === 'ap' || entity.type === 'switch' || entity.type === 'server';
   const isZone = Boolean(entity.signal);
-  const color = isDevice ? statusColor(entity.status, 'health', entity) : isZone ? zoneColor(entity, 'signal') : '#9fb0b7';
+  const colorTone = isDevice ? deviceTone(entity, 'health') : isZone ? zoneTone(entity, 'signal') : 'neutral';
   const deviceLink = isDevice ? getNetworkLinkForDevice(entity.id) : null;
 
   return (
     <section className="detail-panel">
       <div className="detail-heading">
-        <span className="detail-dot" style={{ background: color }} />
+        <span className={toneClass('detail-dot', colorTone)} />
         <div>
           <p>{isDevice ? entity.id : isZone ? '熱區' : '建築'}</p>
           <h2>{entity.name || entity.label}</h2>
@@ -5074,7 +5132,7 @@ function DeviceRow({ device, mode, selected, onSelect }) {
       type="button"
       onClick={() => onSelect(device)}
     >
-      <span className="device-icon" style={{ '--dot': statusColor(device.status, mode, device) }}>
+      <span className={toneClass('device-icon', deviceTone(device, mode))}>
         <DeviceTypeIcon type={device.type} />
       </span>
       <span className="device-copy">
@@ -5131,7 +5189,7 @@ function AssetInfoCard({ device }) {
       <div className="asset-card-title">
         <ClipboardList size={15} />
         <span>資產資料</span>
-        <b style={{ color: ASSET[state].dark }}>{ASSET[state].label}</b>
+        <b className={toneClass('asset-state-label', state)}>{ASSET[state].label}</b>
       </div>
       <div className="detail-grid">
         <Detail label="財產編號" value={device.assetTag || '-'} />
@@ -5324,7 +5382,7 @@ function Legend({ mode }) {
       <div className="legend-items">
         {items.map((item) => (
           <span className="legend-item" key={item.label}>
-            <i style={{ background: item.color }} />
+            <i className={toneClass('legend-dot', legendTone(item.label, mode))} />
             {item.label}
           </span>
         ))}

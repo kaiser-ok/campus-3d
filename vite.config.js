@@ -2,6 +2,18 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { analyzeImage, chatText } from './api/_llm.js';
 
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; worker-src 'self' blob:; frame-src 'self' http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; manifest-src 'self'",
+  'X-Frame-Options': 'DENY',
+  'X-Content-Type-Options': 'nosniff',
+};
+
+function applySecurityHeaders(res) {
+  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+    res.setHeader(key, value);
+  }
+}
+
 async function readBody(req) {
   const chunks = [];
   await new Promise((resolve, reject) => {
@@ -15,6 +27,7 @@ async function readBody(req) {
 function respond(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
+    ...SECURITY_HEADERS,
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body, 'utf-8'),
   });
@@ -29,6 +42,11 @@ function aiProxyPlugin() {
   return {
     name: 'ai-proxy',
     configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        applySecurityHeaders(res);
+        next();
+      });
+
       // Vision: floor plan analysis
       server.middlewares.use('/api/analyze-image', async (req, res) => {
         if (req.method !== 'POST') return respond(res, 405, {});
@@ -53,6 +71,12 @@ function aiProxyPlugin() {
           console.error('[chat]', err);
           respond(res, 500, { error: err.message || String(err) });
         }
+      });
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((req, res, next) => {
+        applySecurityHeaders(res);
+        next();
       });
     },
   };

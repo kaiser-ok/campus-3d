@@ -40,6 +40,11 @@ const CAMPUS = { width: 92, depth: 130 };
 const ACCENT_OPTIONS = ['#617180', '#687985', '#72808b', '#697987', '#737c88', '#8a7b67', '#64798a', '#667983'];
 const STEP_LABELS = ['上傳底圖', 'AI 標記', '確認資料', '預覽套用'];
 
+function accentClass(color) {
+  const index = Math.max(0, ACCENT_OPTIONS.indexOf(color));
+  return `accent-${index}`;
+}
+
 // LLM prompt — asks for bounding boxes + metadata in one shot
 const AI_DETECT_PROMPT = `你是校園平面圖分析 AI。請仔細分析這張學校校園俯視平面圖，自動識別圖中所有獨立的建築物或建築區塊。
 
@@ -319,6 +324,10 @@ function cursorForHandle(handle) {
   if (handle === 'nw' || handle === 'se') return 'nwse-resize';
   if (handle === 'ne' || handle === 'sw') return 'nesw-resize';
   return 'default';
+}
+
+function cursorClass(cursor) {
+  return `cursor-${String(cursor || 'default').replace(/[^a-z0-9_-]/gi, '-')}`;
 }
 
 function hitTestBoxes(boxes, x, y, cw, ch) {
@@ -746,8 +755,7 @@ function DrawStep({ imageUrl, imageBlob, boxes, setBoxes, aiBackend, setAiBacken
         {!ready && <p className="wiz-loading">圖片載入中…</p>}
         <canvas
           ref={canvasRef}
-          className="wiz-canvas"
-          style={{ cursor: manualMode ? 'crosshair' : aiLoading ? 'wait' : cursor, display: ready ? 'block' : 'none' }}
+          className={`wiz-canvas ${ready ? 'is-ready' : ''} ${manualMode ? 'is-manual' : ''} ${aiLoading ? 'is-waiting' : cursorClass(cursor)}`}
           onMouseDown={onDown}
           onMouseMove={onMove}
           onMouseUp={onUp}
@@ -806,7 +814,7 @@ function DrawStep({ imageUrl, imageBlob, boxes, setBoxes, aiBackend, setAiBacken
                 className={`wiz-box-item${box.id === selectedBoxId ? ' is-active' : ''}${hasBoxSizeConcern(box) ? ' has-warning' : ''}`}
                 onClick={() => setSelectedBoxId(box.id)}
               >
-                <span className="wiz-swatch" style={{ background: box.accent }} />
+                <span className={`wiz-swatch ${accentClass(box.accent)}`} />
                 <span className="wiz-box-label">{box.name || `建築 ${i + 1}`}</span>
                 <small className="wiz-box-meta">{box.floors}F</small>
                 <button
@@ -871,8 +879,7 @@ function EditStep({ boxes, setBoxes }) {
             <div className="wiz-colors">
               {ACCENT_OPTIONS.map(c => (
                 <button key={c} type="button" title={c}
-                  className={`wiz-chip${box.accent === c ? ' is-selected' : ''}`}
-                  style={{ background: c }}
+                  className={`wiz-chip ${accentClass(c)}${box.accent === c ? ' is-selected' : ''}`}
                   onClick={() => upd(box.id, 'accent', c)}
                 />
               ))}
@@ -900,16 +907,15 @@ function EditStep({ boxes, setBoxes }) {
   );
 }
 
-function previewStyle(building) {
+function previewBox(building) {
   const left = ((building.x - building.w / 2) / CAMPUS.width + 0.5) * 100;
   const top = ((building.z - building.d / 2) / CAMPUS.depth + 0.5) * 100;
   return {
-    left: `${left}%`,
-    top: `${top}%`,
-    width: `${(building.w / CAMPUS.width) * 100}%`,
-    height: `${(building.d / CAMPUS.depth) * 100}%`,
-    borderColor: building.accent,
-    background: `${building.accent}55`,
+    x: left,
+    y: top,
+    width: (building.w / CAMPUS.width) * 100,
+    height: (building.d / CAMPUS.depth) * 100,
+    accent: building.accent,
   };
 }
 
@@ -964,12 +970,18 @@ function BuildingPreview({ generated, imageUrl }) {
       <div className="wiz-preview-map">
         {imageUrl ? <img src={imageUrl} alt="匯入底圖預覽" /> : null}
         <div className="wiz-preview-grid" />
-        {generated.map((building, index) => (
-          <div className="wiz-preview-building" key={building.id || `${building.name}-${index}`} style={previewStyle(building)}>
-            <strong>{building.name}</strong>
-            <small>{building.floors}F · {building.w}x{building.d}</small>
-          </div>
-        ))}
+        <svg className="wiz-preview-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="建築位置預覽">
+          {generated.map((building, index) => {
+            const box = previewBox(building);
+            return (
+              <g className="wiz-preview-building-svg" key={building.id || `${building.name}-${index}`}>
+                <rect x={box.x} y={box.y} width={box.width} height={box.height} fill={box.accent} fillOpacity="0.32" stroke={box.accent} />
+                <text x={box.x + box.width / 2} y={box.y + box.height / 2 - 1} textAnchor="middle" dominantBaseline="middle">{building.name}</text>
+                <text x={box.x + box.width / 2} y={box.y + box.height / 2 + 5} textAnchor="middle" dominantBaseline="middle" className="wiz-preview-building-meta">{building.floors}F</text>
+              </g>
+            );
+          })}
+        </svg>
       </div>
       {warnings.length > 0 ? (
         <div className="wiz-preview-warnings">
@@ -1106,7 +1118,7 @@ export default function ImportWizard({ onClose, onApply }) {
               {converting ? <span>PDF 轉換中，請稍候…</span> : <span>點擊或拖曳上傳校園平面圖</span>}
               <small>支援 JPG、PNG、PDF</small>
               {convertErr && <em className="wiz-convert-err">{convertErr}</em>}
-              <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} disabled={converting} onChange={e => pickFile(e.target.files[0])} />
+              <input className="visually-hidden-input" type="file" accept="image/*,.pdf" disabled={converting} onChange={e => pickFile(e.target.files[0])} />
             </label>
           )}
 

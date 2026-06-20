@@ -59,6 +59,14 @@ button {
   cursor: grab;
 }
 
+.campus-canvas.is-picking {
+  cursor: pointer;
+}
+
+.campus-canvas.is-grabbing {
+  cursor: grabbing;
+}
+
 .scene-toolbar,
 .touch-view-pad,
 .mode-strip,
@@ -1407,6 +1415,14 @@ h1 {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
 }
 
+.chevron-icon {
+  transition: transform 180ms ease;
+}
+
+.chevron-icon.is-open {
+  transform: rotate(180deg);
+}
+
 .building-copy {
   min-width: 0;
 }
@@ -1419,7 +1435,7 @@ h1 {
   border: 1px solid rgba(39, 54, 58, 0.12);
   border-radius: 6px;
   color: #17252a;
-  background: var(--dot);
+  background: #b9f6ca;
 }
 
 .device-copy {
@@ -1499,6 +1515,73 @@ h1 {
   height: 11px;
   border-radius: 50%;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+.tone-online,
+.tone-good,
+.tone-ok,
+.tone-low {
+  background: #b9f6ca;
+}
+
+.tone-warning,
+.tone-fair,
+.tone-aging,
+.tone-medium {
+  background: #ffe08a;
+}
+
+.tone-offline,
+.tone-outage,
+.tone-eol {
+  background: #ff8a80;
+}
+
+.tone-poor,
+.tone-high {
+  background: #fb8b4b;
+}
+
+.tone-critical {
+  background: #d9465f;
+}
+
+.tone-neutral,
+.tone-unknown,
+.tone-default {
+  background: #9fb0b7;
+}
+
+.tone-fiber {
+  background: #7c3aed;
+}
+
+.tone-cat6 {
+  background: #f59e0b;
+}
+
+.asset-state-label {
+  color: #52616b;
+}
+
+.asset-state-label.tone-ok {
+  color: #047857;
+  background: transparent;
+}
+
+.asset-state-label.tone-aging {
+  color: #9a6b00;
+  background: transparent;
+}
+
+.asset-state-label.tone-eol {
+  color: #b91c1c;
+  background: transparent;
+}
+
+.asset-state-label.tone-unknown {
+  color: #52616b;
+  background: transparent;
 }
 
 @media (max-width: 1080px) {
@@ -1721,6 +1804,56 @@ h1 {
     linear-gradient(90deg, rgba(39,54,58,0.08) 1px, transparent 1px);
   background-size: 10% 10%;
   pointer-events: none;
+}
+
+.editor-preview-svg,
+.wiz-preview-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.editor-building-svg {
+  cursor: move;
+}
+
+.editor-building-svg rect,
+.wiz-preview-building-svg rect {
+  stroke-width: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+
+.editor-building-svg.is-selected rect {
+  stroke-width: 1.1;
+}
+
+.editor-building-svg text,
+.wiz-preview-building-svg text {
+  fill: #17252a;
+  font-size: 2.3px;
+  font-weight: 900;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.86);
+  stroke-width: 0.25px;
+  vector-effect: non-scaling-stroke;
+}
+
+.editor-building-svg-meta,
+.wiz-preview-building-meta {
+  fill: #405256;
+  font-size: 1.75px;
+  font-weight: 850;
+}
+
+.editor-resize-svg-handle {
+  fill: #ffffff;
+  stroke: #0f766e;
+  stroke-width: 0.55;
+  cursor: pointer;
+  vector-effect: non-scaling-stroke;
 }
 
 .editor-building-box {
@@ -2450,9 +2583,43 @@ h1 {
 }
 
 .wiz-canvas {
+  display: none;
   border-radius: 6px;
   box-shadow: 0 4px 18px rgba(0,0,0,0.18);
   max-width: 100%;
+  cursor: default;
+}
+
+.wiz-canvas.is-ready {
+  display: block;
+}
+
+.wiz-canvas.is-manual {
+  cursor: crosshair;
+}
+
+.wiz-canvas.is-waiting {
+  cursor: wait;
+}
+
+.wiz-canvas.cursor-move {
+  cursor: move;
+}
+
+.wiz-canvas.cursor-ns-resize {
+  cursor: ns-resize;
+}
+
+.wiz-canvas.cursor-ew-resize {
+  cursor: ew-resize;
+}
+
+.wiz-canvas.cursor-nwse-resize {
+  cursor: nwse-resize;
+}
+
+.wiz-canvas.cursor-nesw-resize {
+  cursor: nesw-resize;
 }
 
 .wiz-loading {
@@ -2536,6 +2703,15 @@ h1 {
   border-radius: 3px;
   flex-shrink: 0;
 }
+
+.accent-0 { background: #617180; }
+.accent-1 { background: #687985; }
+.accent-2 { background: #72808b; }
+.accent-3 { background: #697987; }
+.accent-4 { background: #737c88; }
+.accent-5 { background: #8a7b67; }
+.accent-6 { background: #64798a; }
+.accent-7 { background: #667983; }
 
 .wiz-box-label {
   overflow: hidden;
@@ -2894,6 +3070,16 @@ h1 {
     linear-gradient(rgba(39,54,58,0.09) 1px, transparent 1px),
     linear-gradient(90deg, rgba(39,54,58,0.09) 1px, transparent 1px);
   background-size: 10% 10%;
+}
+
+.visually-hidden-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .wiz-preview-building {
