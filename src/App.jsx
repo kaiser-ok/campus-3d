@@ -921,7 +921,7 @@ function App() {
   const [networkImportError, setNetworkImportError] = useState('');
   const [networkImportMessage, setNetworkImportMessage] = useState('');
   const [pixelStreamingUrl, setPixelStreamingUrl] = useState(() => (
-    localStorage.getItem('campus3d_pixel_streaming_url') || 'http://127.0.0.1/'
+    localStorage.getItem('campus3d_pixel_streaming_url') || ''
   ));
 
   const currentSchool = schools.find((s) => s.id === currentSchoolId) ?? DEFAULT_SCHOOL;
@@ -1605,7 +1605,7 @@ function App() {
             <input
               value={pixelStreamingUrl}
               onChange={(event) => setPixelStreamingUrl(event.target.value)}
-              placeholder="http://127.0.0.1/"
+              placeholder="https://pixel-streaming.example.com/"
             />
           </label>
           <div className="ue5-action-row">

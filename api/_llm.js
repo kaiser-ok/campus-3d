@@ -4,7 +4,7 @@
 // and production behave identically. Files prefixed with "_" are not exposed
 // as routes by Vercel.
 
-const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || 'http://192.168.30.46:8000';
+const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || '';
 const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || 'google/gemma-4-31B-it';
 
 const OPENROUTER_URL = process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1';
@@ -18,6 +18,9 @@ const VISION_MAX_TOKENS = 8192;
 // ── Gemma (OpenAI-compatible) ────────────────────────────────────────────────
 
 async function gemmaChat(messages, maxTokens = 2000) {
+  if (!LOCAL_LLM_URL) {
+    throw new Error('LOCAL_LLM_URL 未設定');
+  }
   const response = await fetch(`${LOCAL_LLM_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
