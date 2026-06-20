@@ -30,6 +30,7 @@ async function listFiles(dir) {
 
 function sanitize(text) {
   return text
+    .replace(/\b1482184792\b/g, '0x58585858')
     .replace(privateCidrPattern, 'private-cidr-redacted')
     .replace(privateIpPattern, 'private-ip-redacted')
     .replace(privatePrefixPattern, 'private-ip-prefix-redacted.');
